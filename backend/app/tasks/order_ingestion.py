@@ -6,9 +6,30 @@ from datetime import datetime
 
 import dramatiq
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import select
 
+from app.config import settings
+
 logger = structlog.get_logger(__name__)
+
+
+def _create_task_session() -> async_sessionmaker[AsyncSession]:
+    """Create a fresh engine and session maker for use in a single task.
+
+    This is necessary because each asyncio.run() call creates a new event loop,
+    and the database connections must be bound to the current event loop.
+    """
+    engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        future=True,
+    )
+    return async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
 
 
 def extract_numeric_id(gid: str) -> int:
@@ -62,7 +83,6 @@ def ingest_order(order_id: int) -> None:
 
 async def _ingest_order_async(order_id: int) -> None:
     """Async implementation of order ingestion."""
-    from app.db import async_session_maker
     from app.models.enums import OrderStatus
     from app.models.order import Image, LineItem, Order
     from app.services.image_proc import download_image
@@ -71,7 +91,10 @@ async def _ingest_order_async(order_id: int) -> None:
 
     logger.info("Starting order ingestion", order_id=order_id)
 
-    async with async_session_maker() as session:
+    # Create fresh session maker for this task's event loop
+    task_session_maker = _create_task_session()
+
+    async with task_session_maker() as session:
         # Get order from database
         order = await session.get(Order, order_id)
         if not order:

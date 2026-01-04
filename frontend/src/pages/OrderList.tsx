@@ -58,9 +58,9 @@ export default function OrderList() {
 
       {fetchMutation.isSuccess && (
         <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-          Načteno {fetchMutation.data.imported} nových objednávek
+          Nových: {fetchMutation.data.imported}, aktualizováno: {fetchMutation.data.updated}
           {fetchMutation.data.skipped > 0 && (
-            <span className="text-green-600"> ({fetchMutation.data.skipped} již existovalo)</span>
+            <span className="text-green-600"> (přeskočeno: {fetchMutation.data.skipped})</span>
           )}
         </div>
       )}

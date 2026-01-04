@@ -186,8 +186,31 @@ class FetchFromShopifyResponse(BaseModel):
     """Response from fetch-from-shopify endpoint."""
 
     imported: int
+    updated: int
     skipped: int
     total: int
+
+
+def _order_needs_reprocessing(order: Order) -> bool:
+    """Check if an existing order needs re-processing."""
+    # Re-process if in error state
+    if order.status == OrderStatus.ERROR:
+        logger.info("Order in error state, re-queuing", order_id=order.id)
+        return True
+
+    # Re-process if no line items (incomplete ingestion)
+    if len(order.line_items) == 0:
+        logger.info("Order has no line items, re-queuing", order_id=order.id)
+        return True
+
+    # Re-process if any images are not downloaded
+    for li in order.line_items:
+        for img in li.images:
+            if not img.local_path:
+                logger.info("Order has undownloaded images, re-queuing", order_id=order.id, image_id=img.id)
+                return True
+
+    return False
 
 
 @router.post("/orders/fetch-from-shopify", response_model=FetchFromShopifyResponse)
@@ -196,10 +219,11 @@ async def fetch_orders_from_shopify(
     limit: int = 20,
 ) -> FetchFromShopifyResponse:
     """
-    Manually fetch recent orders from Shopify and import them.
+    Manually fetch recent orders from Shopify and import/update them.
 
-    Useful for initial sync or when webhooks are missed.
-    Only imports orders that don't already exist in the database.
+    - New orders are created and queued for processing
+    - Existing orders with missing images or in error state are re-queued
+    - Orders that are fully processed are skipped
     """
     # Fetch recent orders from Shopify
     shopify_orders = await list_recent_orders(limit=limit)
@@ -207,6 +231,7 @@ async def fetch_orders_from_shopify(
         raise HTTPException(status_code=503, detail="Failed to fetch orders from Shopify")
 
     imported = 0
+    updated = 0
     skipped = 0
 
     for edge in shopify_orders.edges:
@@ -214,10 +239,22 @@ async def fetch_orders_from_shopify(
         shopify_id = int(shopify_order.legacy_resource_id)
 
         # Check if order already exists
-        existing = await session.execute(select(Order).where(Order.shopify_id == shopify_id))
-        if existing.scalars().first():
-            skipped += 1
-            logger.debug("Order already exists, skipping", shopify_id=shopify_id)
+        existing_result = await session.execute(
+            select(Order)
+            .options(selectinload(Order.line_items).selectinload(LineItem.images))  # type: ignore[arg-type]
+            .where(Order.shopify_id == shopify_id)
+        )
+        existing_order = existing_result.scalars().first()
+
+        if existing_order:
+            if _order_needs_reprocessing(existing_order) and existing_order.id is not None:
+                existing_order.status = OrderStatus.PENDING
+                await session.flush()
+                ingest_order.send(existing_order.id)
+                updated += 1
+            else:
+                skipped += 1
+                logger.debug("Order already processed, skipping", shopify_id=shopify_id)
             continue
 
         # Build customer name from customer object
@@ -256,6 +293,7 @@ async def fetch_orders_from_shopify(
 
     return FetchFromShopifyResponse(
         imported=imported,
+        updated=updated,
         skipped=skipped,
         total=len(shopify_orders.edges),
     )
