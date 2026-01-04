@@ -1,0 +1,17 @@
+query ListRecentOrders($first: Int!, $query: String) {
+  orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+    edges {
+      node {
+        id
+        name
+        legacyResourceId
+        createdAt
+        email
+        customer {
+          firstName
+          lastName
+        }
+      }
+    }
+  }
+}

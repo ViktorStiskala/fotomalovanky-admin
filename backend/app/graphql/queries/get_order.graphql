@@ -1,0 +1,34 @@
+query GetOrderDetails($id: ID!) {
+  order(id: $id) {
+    id
+    name
+    legacyResourceId
+    createdAt
+    displayFulfillmentStatus
+    customer {
+      firstName
+      lastName
+      email
+    }
+    lineItems(first: 50) {
+      edges {
+        node {
+          id
+          title
+          variantTitle
+          quantity
+          originalUnitPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
+          }
+          customAttributes {
+            key
+            value
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,129 @@
+services:
+  # =============================================================================
+  # Infrastructure
+  # =============================================================================
+  postgres:
+    image: postgres:17
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fotomalovanky}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fotomalovanky}
+      POSTGRES_DB: ${POSTGRES_DB:-fotomalovanky}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fotomalovanky}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mercure:
+    image: dunglas/mercure
+    env_file: .env
+    environment:
+      SERVER_NAME: ":3000"
+      MERCURE_PUBLISHER_JWT_KEY: ${MERCURE_PUBLISHER_JWT_KEY:-change-me-publisher-secret-key}
+      MERCURE_SUBSCRIBER_JWT_KEY: ${MERCURE_SUBSCRIBER_JWT_KEY:-change-me-subscriber-secret-key}
+      # Allow anonymous subscribers (for development)
+      MERCURE_EXTRA_DIRECTIVES: |
+        anonymous
+        cors_origins http://localhost:5173 http://127.0.0.1:5173
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # =============================================================================
+  # Backend Services
+  # =============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: .docker/dev/Dockerfile
+    env_file: .env
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+      - backend_cache:/root/.cache
+      - storage_data:/data/images
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fotomalovanky}:${POSTGRES_PASSWORD:-fotomalovanky}@postgres:5432/${POSTGRES_DB:-fotomalovanky}
+      REDIS_URL: redis://redis:6379/0
+      MERCURE_URL: http://mercure:3000/.well-known/mercure
+      STORAGE_PATH: /data/images
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mercure:
+        condition: service_healthy
+    command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  dramatiq:
+    build:
+      context: ./backend
+      dockerfile: .docker/dev/Dockerfile
+    env_file: .env
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+      - backend_cache:/root/.cache
+      - storage_data:/data/images
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-fotomalovanky}:${POSTGRES_PASSWORD:-fotomalovanky}@postgres:5432/${POSTGRES_DB:-fotomalovanky}
+      REDIS_URL: redis://redis:6379/0
+      MERCURE_URL: http://mercure:3000/.well-known/mercure
+      STORAGE_PATH: /data/images
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mercure:
+        condition: service_healthy
+    command: ["uv", "run", "dramatiq", "app.tasks"]
+
+  # =============================================================================
+  # Frontend
+  # =============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: .docker/dev/Dockerfile
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_MERCURE_URL: http://localhost:3000/.well-known/mercure
+    depends_on:
+      - backend
+    command: ["npm", "run", "dev", "--", "--host"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  backend_cache:
+  storage_data:

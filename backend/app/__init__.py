@@ -1,0 +1,1 @@
+"""Fotomalovanky Admin Backend."""

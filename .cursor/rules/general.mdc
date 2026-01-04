@@ -1,0 +1,86 @@
+---
+alwaysApply: true
+---
+# HARD CONSTRAINTS (MUST FOLLOW)
+
+## Package Management & Tooling
+
+### Backend (Python)
+- **MUST** use `uv` Python package manager. All commands **MUST** be prefixed with `uv run`.
+    - Add scripts to `pyproject.toml` that can run via `uv run …`
+    - Both `uv sync` and `uv run` require `required_permissions: ["all"]` because they access `~/.cache/uv/` outside the workspace
+- **MUST** target Python 3.14+ only, **NO** backward compatibility
+- **MUST** use `ruff` as a linter and `mypy` for type checking
+- **MUST** use type hints for all Python code. Deferred (lazy) evaluation of annotations is the default.
+- **NEVER** use `from __future__ import annotations` - it's unnecessary in Python 3.14+
+
+### Frontend (TypeScript/React)
+- **MUST** use `npm` as package manager
+- **MUST** use TypeScript strict mode
+- **MUST** use ESLint + Prettier for linting/formatting
+- **MUST** use Vite as build tool
+
+## Framework & Library Constraints
+
+### Backend
+- **Web framework:** **FastAPI** (ASGI) **ONLY**. **NEVER** use Flask, Django, or any other framework.
+- **Database ORM:** **SQLModel** for all database models and queries.
+- **HTTP client:** `httpx` (async) **ONLY**. **NEVER** add or use `requests`.
+- **Background jobs:** **Dramatiq** + **Redis** for long-running work (image downloads, PDF generation).
+- **Real-time:** Publish events to **Mercure** hub for SSE push to frontend.
+
+### Frontend
+- **Framework:** React 18+ with TypeScript
+- **Styling:** Tailwind CSS + shadcn/ui components
+- **State Management:** TanStack Query for server state (API caching, auto-refetching)
+- **Routing:** React Router v6+
+- **Real-time:** Native EventSource API for Mercure SSE subscriptions
+
+## Design Principles
+- **Async-first:** All I/O paths **MUST** be async. **NEVER** block in request handlers.
+- Offload long work to Dramatiq workers (image downloads, PDF generation)
+- Backend modules **MUST** belong under `backend/app/` in a fitting subpackage
+- Frontend modules **MUST** belong under `frontend/src/` in a fitting directory
+- **NEVER** hardcode tokens/keys. Read secrets from `.env`.
+    - Use `pydantic-settings` for backend configuration
+    - **MUST** add new secret variables to `.env.example`
+
+## Webhook Handling
+- **MUST** verify Shopify HMAC signature (`X-Shopify-Hmac-Sha256`) before processing
+- **MUST** return `200 OK` immediately to Shopify before starting background processing
+- **MUST** implement idempotency - duplicate webhooks should not corrupt data (use `shopify_id` as unique key)
+
+## Real-time Updates (Ping-to-Refetch Pattern)
+- **DO NOT** send full data payloads via SSE
+- **Pattern:**
+    1. Backend updates PostgreSQL
+    2. Backend posts lightweight ping `{"type": "order_update", "id": 123}` to Mercure topic
+    3. Frontend receives ping via SSE
+    4. Frontend invalidates TanStack Query cache → triggers refetch from API
+
+## Quality & Testing (MANDATORY)
+
+### Backend
+- **MUST** run `uv run ruff check app/` and `uv run mypy app/` before considering work complete
+- Fix all ruff and mypy errors before committing
+- Use `uv run ruff check --fix app/` to auto-fix ruff issues
+
+### Frontend
+- **MUST** run `npm run check` (or individually: `npm run lint`, `npm run typecheck`, `npm run format:check`) before considering work complete
+- Fix all TypeScript and ESLint errors before committing
+- Use `npm run lint:fix` to auto-fix ESLint issues
+- Use `npm run format` to auto-format code with Prettier
+
+## Error Handling
+- If image download fails, update DB status to `error` and expose a "Retry" button in the UI
+- Log errors with structured logging (use `structlog` for backend)
+- **MUST** handle Shopify API rate limits gracefully (implement retry with backoff)
+
+## Order Status Flow
+| Status | Description |
+|--------|-------------|
+| `pending` | Webhook received, waiting for processing |
+| `downloading` | Downloading images from Shopify |
+| `processing` | Images downloaded, processing |
+| `ready_for_review` | Ready for admin review |
+| `error` | Something failed (show Retry button) |
