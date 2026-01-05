@@ -3,7 +3,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 import structlog
 from dateutil.parser import parse as parse_datetime
@@ -14,13 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
-from app.config import settings
 from app.db import get_session
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
 from app.services.mercure import publish_order_list_update
 from app.services.shopify import list_recent_orders
 from app.tasks import ingest_order
+from app.utils import build_customer_name, normalize_order_number, to_api_timezone
 
 if TYPE_CHECKING:
     from app.services.shopify_client.graphql_client.list_recent_orders import (
@@ -30,19 +29,6 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
-
-# Timezone for API responses (from config)
-API_TIMEZONE = ZoneInfo(settings.timezone)
-
-
-def to_api_timezone(dt: datetime | None) -> datetime | None:
-    """Convert a datetime to API timezone (from config)."""
-    if dt is None:
-        return None
-    # Ensure datetime is timezone-aware (assume UTC if naive)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(API_TIMEZONE)
 
 
 class OrderResponse(BaseModel):
@@ -129,21 +115,23 @@ async def list_orders(
     limit: int = 50,
 ) -> OrderListResponse:
     """List all orders with pagination."""
+    from sqlalchemy import func
+
     # Get orders with eager loading of line_items
-    statement = (
+    orders_statement = (
         select(Order)
         .options(selectinload(Order.line_items))  # type: ignore[arg-type]
         .offset(skip)
         .limit(limit)
         .order_by(Order.created_at.desc())  # type: ignore[attr-defined]
     )
-    result = await session.execute(statement)
-    orders = result.scalars().all()
+    orders_result = await session.execute(orders_statement)
+    orders = orders_result.scalars().all()
 
-    # Get total count
-    count_statement = select(Order)
+    # Get total count (efficient - uses SQL COUNT)
+    count_statement = select(func.count()).select_from(Order)
     count_result = await session.execute(count_statement)
-    total = len(count_result.scalars().all())
+    total = count_result.scalar() or 0
 
     return OrderListResponse(
         orders=[
@@ -170,8 +158,7 @@ async def get_order(
     session: AsyncSession = Depends(get_session),
 ) -> OrderDetailResponse:
     """Get a single order with line items and images by Shopify order number."""
-    # Support both "1270" and "#1270" formats
-    normalized_number = f"#{order_number}" if not order_number.startswith("#") else order_number
+    normalized_number = normalize_order_number(order_number)
 
     statement = (
         select(Order)
@@ -222,8 +209,7 @@ async def sync_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Manually trigger a sync/re-processing of an order."""
-    # Support both "1270" and "#1270" formats
-    normalized_number = f"#{order_number}" if not order_number.startswith("#") else order_number
+    normalized_number = normalize_order_number(order_number)
 
     statement = select(Order).where(Order.shopify_order_number == normalized_number)
     result = await session.execute(statement)
@@ -268,9 +254,10 @@ def _update_order_from_shopify(
 
     # Update customer info if changed
     if shopify_order.customer:
-        first = shopify_order.customer.first_name or ""
-        last = shopify_order.customer.last_name or ""
-        customer_name = f"{first} {last}".strip() or None
+        customer_name = build_customer_name(
+            shopify_order.customer.first_name,
+            shopify_order.customer.last_name,
+        )
         if customer_name:
             order.customer_name = customer_name
 
@@ -350,9 +337,10 @@ async def fetch_orders_from_shopify(
         # Build customer name from customer object
         customer_name = None
         if shopify_order.customer:
-            first = shopify_order.customer.first_name or ""
-            last = shopify_order.customer.last_name or ""
-            customer_name = f"{first} {last}".strip() or None
+            customer_name = build_customer_name(
+                shopify_order.customer.first_name,
+                shopify_order.customer.last_name,
+            )
 
         # Extract payment status (convert enum to string if present)
         payment_status = None

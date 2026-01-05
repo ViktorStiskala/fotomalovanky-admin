@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import dramatiq
 import structlog
@@ -10,6 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlmodel import select
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    from app.services.shopify_client.graphql_client.get_order_details import (
+        GetOrderDetailsOrderLineItemsEdgesNode,
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +68,84 @@ def extract_image_urls(attrs: dict[str, str]) -> list[tuple[int, str]]:
     return sorted(images, key=lambda x: x[0])
 
 
+async def _process_line_item(
+    session: AsyncSession,
+    shopify_line_item: GetOrderDetailsOrderLineItemsEdgesNode,
+    order_id: int,
+) -> bool:
+    """Process a single line item and its images.
+
+    Returns:
+        True if there are images that need downloading, False otherwise
+    """
+    from app.models.order import LineItem
+    from app.services.shopify import parse_custom_attributes
+
+    shopify_line_item_id = extract_numeric_id(shopify_line_item.id)
+    attrs = parse_custom_attributes(shopify_line_item.custom_attributes)
+
+    logger.debug(
+        "Processing line item",
+        title=shopify_line_item.title,
+        shopify_line_item_id=shopify_line_item_id,
+        quantity=shopify_line_item.quantity,
+        custom_attrs=attrs,
+    )
+
+    # Check if LineItem already exists (idempotency)
+    existing_stmt = select(LineItem).where(LineItem.shopify_line_item_id == shopify_line_item_id)
+    existing_result = await session.execute(existing_stmt)
+    line_item = existing_result.scalars().first()
+
+    if not line_item:
+        line_item = LineItem(
+            order_id=order_id,
+            shopify_line_item_id=shopify_line_item_id,
+            title=shopify_line_item.title,
+            quantity=shopify_line_item.quantity,
+            dedication=attrs.get("Věnování"),
+            layout=attrs.get("Rozvržení"),
+        )
+        session.add(line_item)
+        await session.flush()
+        logger.info("Created line item", line_item_id=line_item.id, shopify_line_item_id=shopify_line_item_id)
+
+    assert line_item.id is not None, "LineItem ID cannot be None after flush"
+    return await _process_images_for_line_item(session, line_item.id, attrs)
+
+
+async def _process_images_for_line_item(
+    session: AsyncSession,
+    line_item_id: int,
+    attrs: dict[str, str],
+) -> bool:
+    """Process images for a line item.
+
+    Returns:
+        True if there are images that need downloading, False otherwise
+    """
+    from app.models.order import Image
+
+    has_images_to_download = False
+    image_urls = extract_image_urls(attrs)
+
+    for position, url in image_urls:
+        img_stmt = select(Image).where(Image.line_item_id == line_item_id, Image.position == position)
+        img_result = await session.execute(img_stmt)
+        image = img_result.scalars().first()
+
+        if not image:
+            image = Image(line_item_id=line_item_id, position=position, original_url=url)
+            session.add(image)
+            await session.flush()
+            has_images_to_download = True
+            logger.info("Created image record", image_id=image.id, position=position, url=url[:50] + "...")
+        elif not image.local_path:
+            has_images_to_download = True
+
+    return has_images_to_download
+
+
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
 def ingest_order(order_id: int) -> None:
     """
@@ -71,8 +154,8 @@ def ingest_order(order_id: int) -> None:
     Steps:
     1. Fetch full order details from Shopify GraphQL API
     2. Create/update LineItem records
-    3. Download high-res customer images
-    4. Update order status in database
+    3. Create Image records
+    4. Dispatch download_order_images task for parallel image downloading
     5. Publish update event to Mercure
 
     This task is idempotent - running it multiple times for the same order
@@ -84,36 +167,28 @@ def ingest_order(order_id: int) -> None:
 async def _ingest_order_async(order_id: int) -> None:
     """Async implementation of order ingestion."""
     from app.models.enums import OrderStatus
-    from app.models.order import Image, LineItem, Order
-    from app.services.image_proc import download_image
+    from app.models.order import Order
     from app.services.mercure import publish_order_update
-    from app.services.shopify import get_order_details, parse_custom_attributes
+    from app.services.shopify import get_order_details
+    from app.tasks.image_download import download_order_images
 
     logger.info("Starting order ingestion", order_id=order_id)
-
-    # Create fresh session maker for this task's event loop
     task_session_maker = _create_task_session()
 
     async with task_session_maker() as session:
-        # Get order from database
         order = await session.get(Order, order_id)
         if not order:
             logger.error("Order not found", order_id=order_id)
             return
 
-        # Type guard: order.id should always be set after fetching from DB
         assert order.id is not None, "Order ID cannot be None after database fetch"
-
-        # Extract order number from shopify_order_number (e.g., "1270" from "#1270")
         order_number = order.shopify_order_number.lstrip("#") if order.shopify_order_number else str(order.id)
 
         try:
-            # Update status to downloading
-            order.status = OrderStatus.DOWNLOADING
+            order.status = OrderStatus.PROCESSING
             await session.commit()
             await publish_order_update(order_number)
 
-            # Fetch full details from Shopify using typed client
             shopify_order = await get_order_details(order.shopify_id)
             if not shopify_order:
                 logger.error("Failed to fetch order from Shopify", order_id=order_id)
@@ -122,7 +197,6 @@ async def _ingest_order_async(order_id: int) -> None:
                 await publish_order_update(order_number)
                 return
 
-            # Log typed order data
             logger.info(
                 "Fetched Shopify order",
                 order_id=order_id,
@@ -131,116 +205,28 @@ async def _ingest_order_async(order_id: int) -> None:
                 line_item_count=len(shopify_order.line_items.edges),
             )
 
-            # Update payment_status and shipping_method from Shopify
+            # Update order metadata from Shopify
             if shopify_order.display_financial_status:
                 order.payment_status = shopify_order.display_financial_status.value
             if shopify_order.shipping_line:
                 order.shipping_method = shopify_order.shipping_line.title
 
-            # Process line items
+            # Process all line items
+            has_images_to_download = False
             for edge in shopify_order.line_items.edges:
-                shopify_line_item = edge.node
-                shopify_line_item_id = extract_numeric_id(shopify_line_item.id)
-                attrs = parse_custom_attributes(shopify_line_item.custom_attributes)
-
-                logger.debug(
-                    "Processing line item",
-                    title=shopify_line_item.title,
-                    shopify_line_item_id=shopify_line_item_id,
-                    quantity=shopify_line_item.quantity,
-                    custom_attrs=attrs,
-                )
-
-                # Check if LineItem already exists (idempotency)
-                existing_stmt = select(LineItem).where(LineItem.shopify_line_item_id == shopify_line_item_id)
-                existing_result = await session.execute(existing_stmt)
-                line_item = existing_result.scalars().first()
-
-                if not line_item:
-                    # Create new LineItem
-                    line_item = LineItem(
-                        order_id=order_id,
-                        shopify_line_item_id=shopify_line_item_id,
-                        title=shopify_line_item.title,
-                        quantity=shopify_line_item.quantity,
-                        dedication=attrs.get("Věnování"),
-                        layout=attrs.get("Rozvržení"),
-                    )
-                    session.add(line_item)
-                    await session.flush()  # Get the ID
-
-                    logger.info(
-                        "Created line item",
-                        line_item_id=line_item.id,
-                        shopify_line_item_id=shopify_line_item_id,
-                    )
-
-                # Type guard: line_item.id should be set after flush or from DB
-                assert line_item.id is not None, "LineItem ID cannot be None after flush"
-                line_item_db_id: int = line_item.id
-
-                # Extract and process images
-                image_urls = extract_image_urls(attrs)
-                for position, url in image_urls:
-                    # Check if Image already exists (idempotency)
-                    img_stmt = select(Image).where(
-                        Image.line_item_id == line_item_db_id,
-                        Image.position == position,
-                    )
-                    img_result = await session.execute(img_stmt)
-                    image = img_result.scalars().first()
-
-                    if not image:
-                        # Create new Image record
-                        image = Image(
-                            line_item_id=line_item_db_id,
-                            position=position,
-                            original_url=url,
-                        )
-                        session.add(image)
-                        await session.flush()
-
-                        logger.info(
-                            "Created image record",
-                            image_id=image.id,
-                            position=position,
-                            url=url[:50] + "...",
-                        )
-
-                    # Download image if not already downloaded
-                    if not image.local_path:
-                        local_path = await download_image(
-                            url=url,
-                            order_id=order_id,
-                            line_item_id=line_item_db_id,
-                            position=position,
-                        )
-                        if local_path:
-                            image.local_path = local_path
-                            image.downloaded_at = datetime.now(UTC)
-                            logger.info(
-                                "Downloaded image",
-                                image_id=image.id,
-                                local_path=local_path,
-                            )
-                        else:
-                            logger.warning(
-                                "Failed to download image",
-                                image_id=image.id,
-                                url=url,
-                            )
+                if await _process_line_item(session, edge.node, order_id):
+                    has_images_to_download = True
 
             await session.commit()
 
-            # Update status to processing
-            order.status = OrderStatus.PROCESSING
-            await session.commit()
-            await publish_order_update(order_number)
-
-            # Update status to ready
-            order.status = OrderStatus.READY_FOR_REVIEW
-            await session.commit()
-            await publish_order_update(order_number)
+            # Dispatch image download task or mark complete
+            if has_images_to_download:
+                download_order_images.send(order_id)
+                logger.info("Dispatched image download task", order_id=order_id)
+            else:
+                order.status = OrderStatus.READY_FOR_REVIEW
+                await session.commit()
+                await publish_order_update(order_number)
 
             logger.info("Order ingestion complete", order_id=order_id)
 

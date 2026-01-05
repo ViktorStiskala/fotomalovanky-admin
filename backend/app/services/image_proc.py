@@ -1,6 +1,5 @@
 """Image download and processing service."""
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
@@ -76,43 +75,3 @@ async def download_image(url: str, order_id: int, line_item_id: int, position: i
         except OSError as e:
             logger.error("Failed to save image", local_path=str(local_path), error=str(e))
             return None
-
-
-async def download_order_images(
-    order_id: int,
-    images: list[dict[str, str | int]],
-) -> list[dict[str, str | int | None]]:
-    """
-    Download all images for an order.
-
-    Args:
-        order_id: Order ID
-        images: List of image dicts with 'line_item_id', 'position', 'url' keys
-
-    Returns:
-        List of results with 'line_item_id', 'position', 'local_path', 'downloaded_at'
-    """
-    results: list[dict[str, str | int | None]] = []
-
-    for img in images:
-        url = str(img["url"])
-        line_item_id = int(img["line_item_id"])
-        position = int(img["position"])
-
-        local_path = await download_image(
-            url=url,
-            order_id=order_id,
-            line_item_id=line_item_id,
-            position=position,
-        )
-
-        results.append(
-            {
-                "line_item_id": line_item_id,
-                "position": position,
-                "local_path": local_path,
-                "downloaded_at": str(datetime.now(UTC)) if local_path else None,
-            }
-        )
-
-    return results

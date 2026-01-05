@@ -31,12 +31,18 @@ alwaysApply: true
 - **Web framework:** **FastAPI** (ASGI) **ONLY**. **NEVER** use Flask, Django, or any other framework.
 - **Database ORM:** **SQLModel** for all database models and queries.
 - **HTTP client:** `httpx` (async) **ONLY**. **NEVER** add or use `requests`.
-- **Background jobs:** **Dramatiq** + **Redis** for long-running work (image downloads, PDF generation).
+- **Background jobs:** **Dramatiq** + **Redis** for long-running work.
+    - `ingest_order` task - fetches order from Shopify, creates LineItem/Image records
+    - `download_order_images` task - downloads images in parallel with `asyncio.gather`
+    - Use `tenacity` for per-operation retries with exponential backoff
 - **Real-time:** Publish events to **Mercure** hub for SSE push to frontend.
 - **Shopify API:** Use `ariadne-codegen` generated typed client in `app/services/shopify_client/`.
     - GraphQL queries are defined in `app/graphql/queries/`
     - Run `uv run codegen` after modifying queries to regenerate the client
-    - Generated code is excluded from mypy checks
+    - Generated code is excluded from ruff and mypy checks
+- **Utilities:** Common helpers in `app/utils/`:
+    - `datetime_utils.py` - timezone conversions (`to_api_timezone`)
+    - `shopify_helpers.py` - `build_customer_name()`, `normalize_order_number()`
 
 ### Frontend
 - **Framework:** React 18+ with TypeScript
@@ -47,6 +53,8 @@ alwaysApply: true
 
 ## Design Principles
 - **Async-first:** All I/O paths **MUST** be async. **NEVER** block in request handlers.
+- **Parallel operations:** Use `asyncio.gather` for independent async operations (e.g., parallel image downloads, parallel HTTP requests)
+    - **Note:** SQLAlchemy async sessions do NOT support concurrent queries on the same session
 - Offload long work to Dramatiq workers (image downloads, PDF generation)
 - Backend modules **MUST** belong under `backend/app/` in a fitting subpackage
 - Frontend modules **MUST** belong under `frontend/src/` in a fitting directory
@@ -106,7 +114,14 @@ alwaysApply: true
 | Status | Description |
 |--------|-------------|
 | `pending` | Webhook received, waiting for processing |
-| `downloading` | Downloading images from Shopify |
-| `processing` | Images downloaded, processing |
-| `ready_for_review` | Ready for admin review |
+| `processing` | `ingest_order` task running (fetching from Shopify, creating records) |
+| `downloading` | `download_order_images` task running (parallel image downloads) |
+| `ready_for_review` | All images downloaded, ready for admin review |
 | `error` | Something failed (show Retry button) |
+
+### Task Flow
+```
+webhook/API → ingest_order (PROCESSING) → download_order_images (DOWNLOADING) → READY_FOR_REVIEW
+```
+- `ingest_order`: Fetches Shopify data, creates LineItem/Image records, dispatches download task
+- `download_order_images`: Downloads all images in parallel with retries, updates status

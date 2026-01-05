@@ -19,6 +19,7 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "python-dateutil>=2.9.0",
     "python-dotenv>=1.0.0",
+    "tenacity>=9.0.0",
 ]
 
 [dependency-groups]
@@ -38,6 +39,7 @@ default-groups = ["dev"]
 [tool.ruff]
 line-length = 120
 target-version = "py314"
+exclude = ["app/services/shopify_client/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "C90", "UP", "ASYNC"]
