@@ -1,6 +1,6 @@
 """Image download and processing service."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
@@ -111,7 +111,7 @@ async def download_order_images(
                 "line_item_id": line_item_id,
                 "position": position,
                 "local_path": local_path,
-                "downloaded_at": str(datetime.utcnow()) if local_path else None,
+                "downloaded_at": str(datetime.now(UTC)) if local_path else None,
             }
         )
 

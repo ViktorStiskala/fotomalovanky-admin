@@ -2,7 +2,7 @@
 
 import asyncio
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 import dramatiq
 import structlog
@@ -104,11 +104,14 @@ async def _ingest_order_async(order_id: int) -> None:
         # Type guard: order.id should always be set after fetching from DB
         assert order.id is not None, "Order ID cannot be None after database fetch"
 
+        # Extract order number from shopify_order_number (e.g., "1270" from "#1270")
+        order_number = order.shopify_order_number.lstrip("#") if order.shopify_order_number else str(order.id)
+
         try:
             # Update status to downloading
             order.status = OrderStatus.DOWNLOADING
             await session.commit()
-            await publish_order_update(order.id)
+            await publish_order_update(order_number)
 
             # Fetch full details from Shopify using typed client
             shopify_order = await get_order_details(order.shopify_id)
@@ -116,7 +119,7 @@ async def _ingest_order_async(order_id: int) -> None:
                 logger.error("Failed to fetch order from Shopify", order_id=order_id)
                 order.status = OrderStatus.ERROR
                 await session.commit()
-                await publish_order_update(order.id)
+                await publish_order_update(order_number)
                 return
 
             # Log typed order data
@@ -208,7 +211,7 @@ async def _ingest_order_async(order_id: int) -> None:
                         )
                         if local_path:
                             image.local_path = local_path
-                            image.downloaded_at = datetime.utcnow()
+                            image.downloaded_at = datetime.now(UTC)
                             logger.info(
                                 "Downloaded image",
                                 image_id=image.id,
@@ -226,12 +229,12 @@ async def _ingest_order_async(order_id: int) -> None:
             # Update status to processing
             order.status = OrderStatus.PROCESSING
             await session.commit()
-            await publish_order_update(order.id)
+            await publish_order_update(order_number)
 
             # Update status to ready
             order.status = OrderStatus.READY_FOR_REVIEW
             await session.commit()
-            await publish_order_update(order.id)
+            await publish_order_update(order_number)
 
             logger.info("Order ingestion complete", order_id=order_id)
 
@@ -239,5 +242,5 @@ async def _ingest_order_async(order_id: int) -> None:
             logger.error("Order ingestion failed", order_id=order_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await publish_order_update(order.id)
+            await publish_order_update(order_number)
             raise

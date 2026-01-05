@@ -1,11 +1,16 @@
 """Order, LineItem, and Image database models."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger
+from sqlalchemy import BigInteger, Column, DateTime
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.models.enums import OrderStatus
+
+
+def _utc_now() -> datetime:
+    """Return current UTC datetime (timezone-aware)."""
+    return datetime.now(UTC)
 
 
 class Order(SQLModel, table=True):
@@ -19,8 +24,8 @@ class Order(SQLModel, table=True):
     customer_email: str | None = None
     customer_name: str | None = None
     status: OrderStatus = Field(default=OrderStatus.PENDING)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_at: datetime = Field(default_factory=_utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
 
     # Relationships
     line_items: list[LineItem] = Relationship(back_populates="order")
@@ -54,7 +59,7 @@ class Image(SQLModel, table=True):
     position: int  # 1-4 for "Fotka 1" through "Fotka 4"
     original_url: str  # URL from Shopify custom attribute
     local_path: str | None = None  # Path after download
-    downloaded_at: datetime | None = None
+    downloaded_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
     # Relationships
     line_item: LineItem = Relationship(back_populates="images")

@@ -13,19 +13,19 @@ const MERCURE_URL = import.meta.env.VITE_MERCURE_URL || "http://localhost:3000/.
  * This enables real-time status updates as background workers process the order:
  * - pending → downloading → processing → ready_for_review
  *
- * @param orderId - The ID of the order to subscribe to
+ * @param orderNumber - The Shopify order number (e.g., "1270")
  */
-export function useOrderEvents(orderId: number): void {
+export function useOrderEvents(orderNumber: string): void {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    if (!orderId || isNaN(orderId)) {
+    if (!orderNumber) {
       return;
     }
 
     // Build Mercure subscription URL for this specific order
     const url = new URL(MERCURE_URL);
-    url.searchParams.append("topic", `orders/${orderId}`);
+    url.searchParams.append("topic", `orders/${orderNumber}`);
 
     // Create EventSource connection
     const eventSource = new EventSource(url.toString());
@@ -34,10 +34,10 @@ export function useOrderEvents(orderId: number): void {
     eventSource.onmessage = (event: MessageEvent) => {
       try {
         const data: MercureEvent = JSON.parse(event.data);
-        console.log(`[Mercure] Order ${orderId} event received:`, data);
+        console.log(`[Mercure] Order ${orderNumber} event received:`, data);
 
         // Invalidate this specific order's query to trigger a refetch
-        queryClient.invalidateQueries({ queryKey: ["order", orderId] });
+        queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
 
         // Also invalidate the orders list in case status changed
         queryClient.invalidateQueries({ queryKey: ["orders"] });
@@ -47,19 +47,19 @@ export function useOrderEvents(orderId: number): void {
     };
 
     eventSource.onerror = (error) => {
-      console.error(`[Mercure] EventSource error for order ${orderId}:`, error);
+      console.error(`[Mercure] EventSource error for order ${orderNumber}:`, error);
       // EventSource will automatically try to reconnect
     };
 
     eventSource.onopen = () => {
-      console.log(`[Mercure] Connected to order ${orderId} topic`);
+      console.log(`[Mercure] Connected to order ${orderNumber} topic`);
     };
 
-    // Cleanup on unmount or when orderId changes
+    // Cleanup on unmount or when orderNumber changes
     return () => {
-      console.log(`[Mercure] Disconnecting from order ${orderId} topic`);
+      console.log(`[Mercure] Disconnecting from order ${orderNumber} topic`);
       eventSource.close();
       eventSourceRef.current = null;
     };
-  }, [orderId]);
+  }, [orderNumber]);
 }

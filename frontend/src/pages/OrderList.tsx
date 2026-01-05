@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { fetchOrders, fetchFromShopify } from "@/lib/api";
+import { fetchOrders, fetchFromShopify, extractOrderNumber } from "@/lib/api";
 import { useOrderListEvents } from "@/hooks/useOrderListEvents";
 import { ORDER_STATUS_DISPLAY } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -78,6 +78,7 @@ export default function OrderList() {
               <th className="text-left p-3 font-medium">Číslo</th>
               <th className="text-left p-3 font-medium">Datum</th>
               <th className="text-left p-3 font-medium">Zákazník</th>
+              <th className="text-left p-3 font-medium">E-mail</th>
               <th className="text-left p-3 font-medium">Položky</th>
               <th className="text-left p-3 font-medium">Stav</th>
             </tr>
@@ -88,17 +89,26 @@ export default function OrderList() {
                 label: order.status,
                 color: "bg-gray-100",
               };
+              const date = new Date(order.created_at);
+              const formattedDate = date.toLocaleDateString("cs-CZ", {
+                day: "numeric",
+                month: "numeric",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              });
               return (
                 <tr key={order.id} className="border-t hover:bg-muted/50">
                   <td className="p-3">
                     <Link
-                      to={`/orders/${order.id}`}
+                      to={`/orders/${extractOrderNumber(order.shopify_order_number)}`}
                       className="text-primary underline hover:no-underline"
                     >
                       {order.shopify_order_number}
                     </Link>
                   </td>
-                  <td className="p-3 text-muted-foreground">{/* TODO: Add created_at field */}—</td>
+                  <td className="p-3 text-muted-foreground">{formattedDate}</td>
+                  <td className="p-3">{order.customer_name || "—"}</td>
                   <td className="p-3">{order.customer_email || "—"}</td>
                   <td className="p-3">{order.item_count} omalovánky</td>
                   <td className="p-3">
@@ -111,7 +121,7 @@ export default function OrderList() {
             })}
             {data?.orders.length === 0 && (
               <tr>
-                <td colSpan={5} className="p-8 text-center text-muted-foreground">
+                <td colSpan={6} className="p-8 text-center text-muted-foreground">
                   Žádné objednávky
                 </td>
               </tr>

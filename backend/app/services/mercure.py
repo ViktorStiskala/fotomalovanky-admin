@@ -22,7 +22,7 @@ def create_mercure_jwt() -> str:
     )
 
 
-async def publish_order_update(order_id: int) -> bool:
+async def publish_order_update(order_number: str) -> bool:
     """
     Publish an order update event to Mercure.
 
@@ -31,7 +31,7 @@ async def publish_order_update(order_id: int) -> bool:
     the order data from the API.
 
     Args:
-        order_id: The ID of the updated order
+        order_number: The Shopify order number (e.g., "1270" without the "#")
 
     Returns:
         True if published successfully, False otherwise
@@ -44,8 +44,8 @@ async def publish_order_update(order_id: int) -> bool:
             response = await client.post(
                 settings.mercure_url,
                 data={
-                    "topic": ["orders", f"orders/{order_id}"],
-                    "data": f'{{"type": "order_update", "id": {order_id}}}',
+                    "topic": ["orders", f"orders/{order_number}"],
+                    "data": f'{{"type": "order_update", "order_number": "{order_number}"}}',
                 },
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -55,18 +55,18 @@ async def publish_order_update(order_id: int) -> bool:
             )
             response.raise_for_status()
 
-            logger.info("Published order update to Mercure", order_id=order_id)
+            logger.info("Published order update to Mercure", order_number=order_number)
             return True
 
         except httpx.HTTPStatusError as e:
             logger.error(
                 "Failed to publish to Mercure",
                 status_code=e.response.status_code,
-                order_id=order_id,
+                order_number=order_number,
             )
             return False
         except httpx.RequestError as e:
-            logger.error("Mercure request failed", error=str(e), order_id=order_id)
+            logger.error("Mercure request failed", error=str(e), order_number=order_number)
             return False
 
 

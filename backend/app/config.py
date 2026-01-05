@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # Application
     debug: bool = False
     log_level: str = "info"
+    timezone: str = "Europe/Prague"
     backend_cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     @field_validator("backend_cors_origins", mode="before")

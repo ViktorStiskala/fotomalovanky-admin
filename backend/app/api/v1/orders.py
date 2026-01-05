@@ -1,16 +1,19 @@
 """Order API endpoints."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import structlog
+from dateutil.parser import parse as parse_datetime
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from app.config import settings
 from app.db import get_session
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
@@ -20,6 +23,19 @@ from app.tasks import ingest_order
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+# Timezone for API responses (from config)
+API_TIMEZONE = ZoneInfo(settings.timezone)
+
+
+def to_api_timezone(dt: datetime | None) -> datetime | None:
+    """Convert a datetime to API timezone (from config)."""
+    if dt is None:
+        return None
+    # Ensure datetime is timezone-aware (assume UTC if naive)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(API_TIMEZONE)
 
 
 class OrderResponse(BaseModel):
@@ -32,6 +48,14 @@ class OrderResponse(BaseModel):
     customer_name: str | None
     status: OrderStatus
     item_count: int
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, dt: datetime) -> str:
+        """Serialize datetime to API timezone."""
+        localized_dt = to_api_timezone(dt)
+        assert localized_dt is not None
+        return localized_dt.isoformat()
 
 
 class ImageResponse(BaseModel):
@@ -42,6 +66,12 @@ class ImageResponse(BaseModel):
     original_url: str
     local_path: str | None
     downloaded_at: datetime | None
+
+    @field_serializer("downloaded_at")
+    def serialize_downloaded_at(self, dt: datetime | None) -> str | None:
+        """Serialize datetime to API timezone."""
+        localized_dt = to_api_timezone(dt)
+        return localized_dt.isoformat() if localized_dt else None
 
 
 class LineItemResponse(BaseModel):
@@ -66,6 +96,13 @@ class OrderDetailResponse(BaseModel):
     status: OrderStatus
     created_at: datetime
     line_items: list[LineItemResponse]
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, dt: datetime) -> str:
+        """Serialize datetime to API timezone."""
+        localized_dt = to_api_timezone(dt)
+        assert localized_dt is not None
+        return localized_dt.isoformat()
 
 
 class OrderListResponse(BaseModel):
@@ -108,6 +145,7 @@ async def list_orders(
                 customer_name=order.customer_name,
                 status=order.status,
                 item_count=len(order.line_items),
+                created_at=order.created_at,
             )
             for order in orders
         ],
@@ -115,16 +153,19 @@ async def list_orders(
     )
 
 
-@router.get("/orders/{order_id}", response_model=OrderDetailResponse)
+@router.get("/orders/{order_number}", response_model=OrderDetailResponse)
 async def get_order(
-    order_id: int,
+    order_number: str,
     session: AsyncSession = Depends(get_session),
 ) -> OrderDetailResponse:
-    """Get a single order with line items and images."""
+    """Get a single order with line items and images by Shopify order number."""
+    # Support both "1270" and "#1270" formats
+    normalized_number = f"#{order_number}" if not order_number.startswith("#") else order_number
+
     statement = (
         select(Order)
         .options(selectinload(Order.line_items).selectinload(LineItem.images))  # type: ignore[arg-type]
-        .where(Order.id == order_id)
+        .where(Order.shopify_order_number == normalized_number)
     )
     result = await session.execute(statement)
     order = result.scalars().first()
@@ -162,13 +203,18 @@ async def get_order(
     )
 
 
-@router.post("/orders/{order_id}/sync")
+@router.post("/orders/{order_number}/sync")
 async def sync_order(
-    order_id: int,
+    order_number: str,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Manually trigger a sync/re-processing of an order."""
-    order = await session.get(Order, order_id)
+    # Support both "1270" and "#1270" formats
+    normalized_number = f"#{order_number}" if not order_number.startswith("#") else order_number
+
+    statement = select(Order).where(Order.shopify_order_number == normalized_number)
+    result = await session.execute(statement)
+    order = result.scalars().first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
@@ -176,10 +222,13 @@ async def sync_order(
     order.status = OrderStatus.PENDING
     await session.commit()
 
-    # Enqueue background task
-    ingest_order.send(order_id)
+    # Type guard for order.id
+    assert order.id is not None, "Order ID cannot be None"
 
-    return {"status": "queued", "message": f"Order {order_id} queued for sync"}
+    # Enqueue background task
+    ingest_order.send(order.id)
+
+    return {"status": "queued", "message": f"Order {order.shopify_order_number} queued for sync"}
 
 
 class FetchFromShopifyResponse(BaseModel):
@@ -264,6 +313,11 @@ async def fetch_orders_from_shopify(
             last = shopify_order.customer.last_name or ""
             customer_name = f"{first} {last}".strip() or None
 
+        # Parse Shopify created_at timestamp and convert to UTC for storage
+        shopify_created_at = parse_datetime(str(shopify_order.created_at))
+        if shopify_created_at.tzinfo is not None:
+            shopify_created_at = shopify_created_at.astimezone(UTC)
+
         # Create new order
         order = Order(
             shopify_id=shopify_id,
@@ -271,6 +325,7 @@ async def fetch_orders_from_shopify(
             customer_email=shopify_order.email,
             customer_name=customer_name,
             status=OrderStatus.PENDING,
+            created_at=shopify_created_at,
         )
         session.add(order)
         await session.flush()  # Get the order ID

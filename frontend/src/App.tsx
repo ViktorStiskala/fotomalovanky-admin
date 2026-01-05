@@ -7,7 +7,7 @@ function App() {
     <div className="min-h-screen bg-background">
       <Routes>
         <Route path="/" element={<OrderList />} />
-        <Route path="/orders/:orderId" element={<OrderDetail />} />
+        <Route path="/orders/:orderNumber" element={<OrderDetail />} />
       </Routes>
     </div>
   );

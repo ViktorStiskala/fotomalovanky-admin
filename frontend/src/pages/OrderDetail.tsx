@@ -7,26 +7,26 @@ import { ORDER_STATUS_DISPLAY } from "@/types";
 import { Button } from "@/components/ui/button";
 
 export default function OrderDetail() {
-  const { orderId } = useParams<{ orderId: string }>();
-  const numericOrderId = Number(orderId);
+  const { orderNumber } = useParams<{ orderNumber: string }>();
 
   // Subscribe to real-time updates for this specific order
-  useOrderEvents(numericOrderId);
+  // Using order number as the identifier
+  useOrderEvents(orderNumber || "");
 
   const {
     data: order,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["order", numericOrderId],
-    queryFn: () => fetchOrder(numericOrderId),
-    enabled: !isNaN(numericOrderId),
+    queryKey: ["order", orderNumber],
+    queryFn: () => fetchOrder(orderNumber!),
+    enabled: !!orderNumber,
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => syncOrder(numericOrderId),
+    mutationFn: () => syncOrder(orderNumber!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["order", numericOrderId] });
+      queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
       queryClient.invalidateQueries({ queryKey: ["orders"] });
     },
   });
@@ -112,12 +112,12 @@ export default function OrderDetail() {
         >
           {syncMutation.isPending ? "Spouštím..." : "Stáhnout ze Shopify"}
         </Button>
-        <button className="underline hover:no-underline" disabled={isProcessing}>
+        <Button variant="outline" disabled={isProcessing}>
           Vygenerovat jednotlivé omalovánky
-        </button>
-        <button className="underline hover:no-underline" disabled={isProcessing}>
+        </Button>
+        <Button variant="outline" disabled={isProcessing}>
           Vygenerovat PDF
-        </button>
+        </Button>
       </div>
 
       {/* Order info */}
@@ -149,9 +149,9 @@ export default function OrderDetail() {
                 <h2 className="text-lg font-semibold">
                   {lineItem.title} {order.line_items.length > 1 && `(${index + 1})`}
                 </h2>
-                <button className="underline text-sm hover:no-underline">
+                <Button variant="outline" size="sm">
                   Vygenerovat omalovánky
-                </button>
+                </Button>
               </div>
 
               <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
@@ -166,20 +166,21 @@ export default function OrderDetail() {
               </div>
 
               {/* Images grid */}
-              <div className="grid grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 gap-6">
                 {lineItem.images.length === 0 ? (
-                  <div className="col-span-4 text-center text-muted-foreground py-8">
+                  <div className="col-span-2 text-center text-muted-foreground py-8">
                     Žádné obrázky
                   </div>
                 ) : (
                   lineItem.images.map((image) => (
-                    <div key={image.id} className="space-y-2">
-                      <div className="aspect-square bg-muted rounded overflow-hidden relative">
+                    <div key={image.id} className="space-y-3">
+                      {/* Image container with fixed height, image preserves aspect ratio */}
+                      <div className="h-[32rem] bg-muted rounded overflow-hidden relative flex items-center justify-center">
                         {image.local_path ? (
                           <img
                             src={getImageUrl(image.id)}
                             alt={`Fotka ${image.position}`}
-                            className="w-full h-full object-cover"
+                            className="max-w-full max-h-full object-contain"
                             onError={(e) => {
                               // Fallback to placeholder if image fails to load
                               e.currentTarget.style.display = "none";
@@ -201,12 +202,17 @@ export default function OrderDetail() {
                               : "Čeká na stažení"}
                         </div>
                       </div>
-                      <div className="aspect-square bg-muted rounded flex items-center justify-center text-muted-foreground text-sm">
+                      {/* Coloring book placeholder with fixed height */}
+                      <div className="h-[32rem] bg-muted rounded flex items-center justify-center text-muted-foreground text-sm">
                         Omalovánka {image.position}
                       </div>
                       <div className="flex gap-2 text-xs">
-                        <button className="underline hover:no-underline">Upravit</button>
-                        <button className="underline hover:no-underline">Schválit</button>
+                        <Button variant="outline" size="sm">
+                          Upravit
+                        </Button>
+                        <Button variant="outline" size="sm">
+                          Schválit
+                        </Button>
                       </div>
                     </div>
                   ))
