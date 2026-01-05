@@ -7,9 +7,13 @@ query ListRecentOrders($first: Int!, $query: String) {
         legacyResourceId
         createdAt
         email
+        displayFinancialStatus
         customer {
           firstName
           lastName
+        }
+        shippingLine {
+          title
         }
       }
     }

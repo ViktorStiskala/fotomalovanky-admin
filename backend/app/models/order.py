@@ -23,6 +23,8 @@ class Order(SQLModel, table=True):
     shopify_order_number: str = Field(index=True)
     customer_email: str | None = None
     customer_name: str | None = None
+    payment_status: str | None = None  # Shopify displayFinancialStatus
+    shipping_method: str | None = None  # Shopify shippingLine.title
     status: OrderStatus = Field(default=OrderStatus.PENDING)
     created_at: datetime = Field(default_factory=_utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
     updated_at: datetime = Field(default_factory=_utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))

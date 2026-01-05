@@ -541,6 +541,7 @@ from .get_order_details import (
     GetOrderDetailsOrderLineItemsEdgesNodeCustomAttributes,
     GetOrderDetailsOrderLineItemsEdgesNodeOriginalUnitPriceSet,
     GetOrderDetailsOrderLineItemsEdgesNodeOriginalUnitPriceSetShopMoney,
+    GetOrderDetailsOrderShippingLine,
 )
 from .input_types import (
     AppPlanInput,
@@ -1041,6 +1042,7 @@ from .list_recent_orders import (
     ListRecentOrdersOrdersEdges,
     ListRecentOrdersOrdersEdgesNode,
     ListRecentOrdersOrdersEdgesNodeCustomer,
+    ListRecentOrdersOrdersEdgesNodeShippingLine,
 )
 
 __all__ = [
@@ -1446,6 +1448,7 @@ __all__ = [
     "GetOrderDetailsOrderLineItemsEdgesNodeCustomAttributes",
     "GetOrderDetailsOrderLineItemsEdgesNodeOriginalUnitPriceSet",
     "GetOrderDetailsOrderLineItemsEdgesNodeOriginalUnitPriceSetShopMoney",
+    "GetOrderDetailsOrderShippingLine",
     "GiftCardCreateInput",
     "GiftCardCreditInput",
     "GiftCardDeactivateUserErrorCode",
@@ -1501,6 +1504,7 @@ __all__ = [
     "ListRecentOrdersOrdersEdges",
     "ListRecentOrdersOrdersEdgesNode",
     "ListRecentOrdersOrdersEdgesNodeCustomer",
+    "ListRecentOrdersOrdersEdgesNodeShippingLine",
     "LocalizableContentType",
     "LocalizationExtensionInput",
     "LocalizationExtensionKey",

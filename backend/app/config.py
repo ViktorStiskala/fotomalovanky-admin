@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # Shopify
     shopify_store_url: str = ""
+    shopify_store_handle: str = ""  # e.g., "aqi8it-7n" for admin URL construction
     shopify_access_token: str = ""
     shopify_webhook_secret: str = ""
 

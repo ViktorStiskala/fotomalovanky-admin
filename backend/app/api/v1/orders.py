@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -17,8 +18,14 @@ from app.config import settings
 from app.db import get_session
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
+from app.services.mercure import publish_order_list_update
 from app.services.shopify import list_recent_orders
 from app.tasks import ingest_order
+
+if TYPE_CHECKING:
+    from app.services.shopify_client.graphql_client.list_recent_orders import (
+        ListRecentOrdersOrdersEdgesNode,
+    )
 
 logger = structlog.get_logger(__name__)
 
@@ -46,6 +53,7 @@ class OrderResponse(BaseModel):
     shopify_order_number: str
     customer_email: str | None
     customer_name: str | None
+    payment_status: str | None
     status: OrderStatus
     item_count: int
     created_at: datetime
@@ -93,6 +101,8 @@ class OrderDetailResponse(BaseModel):
     shopify_order_number: str
     customer_email: str | None
     customer_name: str | None
+    payment_status: str | None
+    shipping_method: str | None
     status: OrderStatus
     created_at: datetime
     line_items: list[LineItemResponse]
@@ -143,6 +153,7 @@ async def list_orders(
                 shopify_order_number=order.shopify_order_number,
                 customer_email=order.customer_email,
                 customer_name=order.customer_name,
+                payment_status=order.payment_status,
                 status=order.status,
                 item_count=len(order.line_items),
                 created_at=order.created_at,
@@ -178,6 +189,8 @@ async def get_order(
         shopify_order_number=order.shopify_order_number,
         customer_email=order.customer_email,
         customer_name=order.customer_name,
+        payment_status=order.payment_status,
+        shipping_method=order.shipping_method,
         status=order.status,
         created_at=order.created_at,
         line_items=[
@@ -240,6 +253,31 @@ class FetchFromShopifyResponse(BaseModel):
     total: int
 
 
+def _update_order_from_shopify(
+    order: Order,
+    shopify_order: ListRecentOrdersOrdersEdgesNode,
+) -> None:
+    """Update order with latest data from Shopify (payment status, shipping method, etc.)."""
+    # Update payment status
+    if shopify_order.display_financial_status:
+        order.payment_status = shopify_order.display_financial_status.value
+
+    # Update shipping method
+    if shopify_order.shipping_line:
+        order.shipping_method = shopify_order.shipping_line.title
+
+    # Update customer info if changed
+    if shopify_order.customer:
+        first = shopify_order.customer.first_name or ""
+        last = shopify_order.customer.last_name or ""
+        customer_name = f"{first} {last}".strip() or None
+        if customer_name:
+            order.customer_name = customer_name
+
+    if shopify_order.email:
+        order.customer_email = shopify_order.email
+
+
 def _order_needs_reprocessing(order: Order) -> bool:
     """Check if an existing order needs re-processing."""
     # Re-process if in error state
@@ -296,6 +334,9 @@ async def fetch_orders_from_shopify(
         existing_order = existing_result.scalars().first()
 
         if existing_order:
+            # Always update basic order info from Shopify (payment status, shipping method, etc.)
+            _update_order_from_shopify(existing_order, shopify_order)
+
             if _order_needs_reprocessing(existing_order) and existing_order.id is not None:
                 existing_order.status = OrderStatus.PENDING
                 await session.flush()
@@ -313,6 +354,14 @@ async def fetch_orders_from_shopify(
             last = shopify_order.customer.last_name or ""
             customer_name = f"{first} {last}".strip() or None
 
+        # Extract payment status (convert enum to string if present)
+        payment_status = None
+        if shopify_order.display_financial_status:
+            payment_status = shopify_order.display_financial_status.value
+
+        # Extract shipping method
+        shipping_method = shopify_order.shipping_line.title if shopify_order.shipping_line else None
+
         # Parse Shopify created_at timestamp and convert to UTC for storage
         shopify_created_at = parse_datetime(str(shopify_order.created_at))
         if shopify_created_at.tzinfo is not None:
@@ -324,6 +373,8 @@ async def fetch_orders_from_shopify(
             shopify_order_number=shopify_order.name,
             customer_email=shopify_order.email,
             customer_name=customer_name,
+            payment_status=payment_status,
+            shipping_method=shipping_method,
             status=OrderStatus.PENDING,
             created_at=shopify_created_at,
         )
@@ -345,6 +396,10 @@ async def fetch_orders_from_shopify(
         )
 
     await session.commit()
+
+    # Notify frontend about new/updated orders via Mercure
+    if imported > 0 or updated > 0:
+        await publish_order_list_update()
 
     return FetchFromShopifyResponse(
         imported=imported,

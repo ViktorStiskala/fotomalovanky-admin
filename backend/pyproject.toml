@@ -18,6 +18,7 @@ dependencies = [
     "pyjwt>=2.10.0",
     "psycopg[binary]>=3.2.0",
     "python-dateutil>=2.9.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [dependency-groups]
@@ -65,6 +66,9 @@ ignore_errors = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v"
+
+[project.scripts]
+codegen = "app.scripts.codegen:main"
 
 [build-system]
 requires = ["hatchling"]

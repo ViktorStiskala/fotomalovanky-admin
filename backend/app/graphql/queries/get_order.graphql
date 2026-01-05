@@ -5,10 +5,14 @@ query GetOrderDetails($id: ID!) {
     legacyResourceId
     createdAt
     displayFulfillmentStatus
+    displayFinancialStatus
     customer {
       firstName
       lastName
       email
+    }
+    shippingLine {
+      title
     }
     lineItems(first: 50) {
       edges {

@@ -1,12 +1,15 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { fetchOrders, fetchFromShopify, extractOrderNumber } from "@/lib/api";
+import { fetchOrders, fetchFromShopify, extractOrderNumber, getShopifyOrderUrl } from "@/lib/api";
 import { useOrderListEvents } from "@/hooks/useOrderListEvents";
-import { ORDER_STATUS_DISPLAY } from "@/types";
+import { ORDER_STATUS_DISPLAY, getPaymentStatusDisplay } from "@/types";
 import { Button } from "@/components/ui/button";
 
 export default function OrderList() {
   const queryClient = useQueryClient();
+  const [dismissedSuccess, setDismissedSuccess] = useState(false);
+  const [dismissedError, setDismissedError] = useState(false);
 
   // Subscribe to real-time updates
   useOrderListEvents();
@@ -18,6 +21,11 @@ export default function OrderList() {
 
   const fetchMutation = useMutation({
     mutationFn: () => fetchFromShopify(20),
+    onMutate: () => {
+      // Reset dismissed states when starting a new mutation
+      setDismissedSuccess(false);
+      setDismissedError(false);
+    },
     onSuccess: (result) => {
       // Invalidate and refetch orders list
       queryClient.invalidateQueries({ queryKey: ["orders"] });
@@ -56,18 +64,34 @@ export default function OrderList() {
         </Button>
       </div>
 
-      {fetchMutation.isSuccess && (
-        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm">
-          Nových: {fetchMutation.data.imported}, aktualizováno: {fetchMutation.data.updated}
-          {fetchMutation.data.skipped > 0 && (
-            <span className="text-green-600"> (přeskočeno: {fetchMutation.data.skipped})</span>
-          )}
+      {fetchMutation.isSuccess && !dismissedSuccess && (
+        <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm flex justify-between items-center">
+          <span>
+            Nových: {fetchMutation.data.imported}, aktualizováno: {fetchMutation.data.updated}
+            {fetchMutation.data.skipped > 0 && (
+              <span className="text-green-600"> (přeskočeno: {fetchMutation.data.skipped})</span>
+            )}
+          </span>
+          <button
+            onClick={() => setDismissedSuccess(true)}
+            className="text-green-600 hover:text-green-800 ml-4"
+            aria-label="Zavřít"
+          >
+            ✕
+          </button>
         </div>
       )}
 
-      {fetchMutation.isError && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
-          Chyba při načítání z Shopify
+      {fetchMutation.isError && !dismissedError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm flex justify-between items-center">
+          <span>Chyba při načítání z Shopify</span>
+          <button
+            onClick={() => setDismissedError(true)}
+            className="text-red-600 hover:text-red-800 ml-4"
+            aria-label="Zavřít"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -80,7 +104,9 @@ export default function OrderList() {
               <th className="text-left p-3 font-medium">Zákazník</th>
               <th className="text-left p-3 font-medium">E-mail</th>
               <th className="text-left p-3 font-medium">Položky</th>
+              <th className="text-left p-3 font-medium">Stav platby</th>
               <th className="text-left p-3 font-medium">Stav</th>
+              <th className="text-left p-3 font-medium">Shopify</th>
             </tr>
           </thead>
           <tbody>
@@ -89,6 +115,7 @@ export default function OrderList() {
                 label: order.status,
                 color: "bg-gray-100",
               };
+              const paymentStatus = getPaymentStatusDisplay(order.payment_status);
               const date = new Date(order.created_at);
               const formattedDate = date.toLocaleDateString("cs-CZ", {
                 day: "numeric",
@@ -112,16 +139,38 @@ export default function OrderList() {
                   <td className="p-3">{order.customer_email || "—"}</td>
                   <td className="p-3">{order.item_count} omalovánky</td>
                   <td className="p-3">
+                    {paymentStatus.color ? (
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium ${paymentStatus.color}`}
+                      >
+                        {paymentStatus.label}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">{paymentStatus.label}</span>
+                    )}
+                  </td>
+                  <td className="p-3">
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.color}`}>
                       {status.label}
                     </span>
+                  </td>
+                  <td className="p-3">
+                    <Button variant="outline" size="sm" asChild>
+                      <a
+                        href={getShopifyOrderUrl(order.shopify_id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Otevřít ve Shopify
+                      </a>
+                    </Button>
                   </td>
                 </tr>
               );
             })}
             {data?.orders.length === 0 && (
               <tr>
-                <td colSpan={6} className="p-8 text-center text-muted-foreground">
+                <td colSpan={8} className="p-8 text-center text-muted-foreground">
                   Žádné objednávky
                 </td>
               </tr>

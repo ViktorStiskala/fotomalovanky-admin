@@ -131,6 +131,12 @@ async def _ingest_order_async(order_id: int) -> None:
                 line_item_count=len(shopify_order.line_items.edges),
             )
 
+            # Update payment_status and shipping_method from Shopify
+            if shopify_order.display_financial_status:
+                order.payment_status = shopify_order.display_financial_status.value
+            if shopify_order.shipping_line:
+                order.shipping_method = shopify_order.shipping_line.title
+
             # Process line items
             for edge in shopify_order.line_items.edges:
                 shopify_line_item = edge.node

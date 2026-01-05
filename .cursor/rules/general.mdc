@@ -14,6 +14,11 @@ alwaysApply: true
 - **MUST** use type hints for all Python code. Deferred (lazy) evaluation of annotations is the default.
 - **NEVER** use `from __future__ import annotations` - it's unnecessary in Python 3.14+
 
+### Available Scripts (Backend)
+- `uv run codegen` - Regenerate Shopify GraphQL client (loads `.env` automatically)
+- `uv run alembic upgrade head` - Run database migrations (requires `DATABASE_URL` in `.env`)
+- `uv run alembic revision --autogenerate -m "description"` - Create new migration
+
 ### Frontend (TypeScript/React)
 - **MUST** use `npm` as package manager
 - **MUST** use TypeScript strict mode
@@ -28,6 +33,10 @@ alwaysApply: true
 - **HTTP client:** `httpx` (async) **ONLY**. **NEVER** add or use `requests`.
 - **Background jobs:** **Dramatiq** + **Redis** for long-running work (image downloads, PDF generation).
 - **Real-time:** Publish events to **Mercure** hub for SSE push to frontend.
+- **Shopify API:** Use `ariadne-codegen` generated typed client in `app/services/shopify_client/`.
+    - GraphQL queries are defined in `app/graphql/queries/`
+    - Run `uv run codegen` after modifying queries to regenerate the client
+    - Generated code is excluded from mypy checks
 
 ### Frontend
 - **Framework:** React 18+ with TypeScript
@@ -45,6 +54,13 @@ alwaysApply: true
     - Use `pydantic-settings` for backend configuration
     - **MUST** add new secret variables to `.env.example`
 
+## Environment Setup
+- Copy `.env.example` to `.env` and fill in the values
+- **Local development** (outside Docker):
+    - `DATABASE_URL` must point to `localhost:5439` (docker-compose exposes postgres on port 5439 to avoid system postgres conflicts)
+    - Required for running `uv run alembic` commands locally
+- **Inside Docker containers**: `DATABASE_URL` is set automatically via docker-compose
+
 ## Webhook Handling
 - **MUST** verify Shopify HMAC signature (`X-Shopify-Hmac-Sha256`) before processing
 - **MUST** return `200 OK` immediately to Shopify before starting background processing
@@ -52,11 +68,21 @@ alwaysApply: true
 
 ## Real-time Updates (Ping-to-Refetch Pattern)
 - **DO NOT** send full data payloads via SSE
+- **MUST** emit Mercure events on **every** state change:
+    - New order created (webhook, manual fetch) → `publish_order_list_update()`
+    - Order status changed → `publish_order_update(order_number)`
+    - Images downloaded/updated → `publish_order_update(order_number)`
+    - Any data modification visible to users → appropriate Mercure publish
 - **Pattern:**
     1. Backend updates PostgreSQL
-    2. Backend posts lightweight ping `{"type": "order_update", "id": 123}` to Mercure topic
-    3. Frontend receives ping via SSE
+    2. Backend posts lightweight ping to Mercure topic:
+        - List updates: `{"type": "list_update"}` to `orders` topic
+        - Order updates: `{"type": "order_update", "order_number": "1270"}` to `orders` and `orders/{order_number}` topics
+    3. Frontend receives ping via SSE (hooks in `frontend/src/hooks/`)
     4. Frontend invalidates TanStack Query cache → triggers refetch from API
+- **Frontend hooks:**
+    - `useOrderListEvents()` - subscribes to `orders` topic for list view
+    - `useOrderEvents(orderNumber)` - subscribes to `orders/{orderNumber}` topic for detail view
 
 ## Quality & Testing (MANDATORY)
 

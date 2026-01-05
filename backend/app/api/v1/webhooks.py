@@ -12,6 +12,7 @@ from app.config import settings
 from app.db import async_session_maker
 from app.models.enums import OrderStatus
 from app.models.order import Order
+from app.services.mercure import publish_order_list_update
 from app.tasks import ingest_order
 
 logger = structlog.get_logger(__name__)
@@ -89,6 +90,10 @@ async def save_or_get_order(payload: dict[str, object], session: AsyncSession) -
     await session.refresh(order)
 
     logger.info("Created new order", shopify_id=shopify_id, order_id=order.id)
+
+    # Notify frontend about new order via Mercure
+    await publish_order_list_update()
+
     return order
 
 

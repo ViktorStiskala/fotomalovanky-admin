@@ -3,7 +3,7 @@
 import enum
 import json
 from collections.abc import AsyncIterator
-from typing import IO, Any, TypeVar, cast
+from typing import IO, Any, Optional, TypeVar, cast
 from uuid import uuid4
 
 import httpx
@@ -66,12 +66,12 @@ class AsyncBaseClient:
     def __init__(
         self,
         url: str = "",
-        headers: dict[str, str] | None = None,
-        http_client: httpx.AsyncClient | None = None,
+        headers: Optional[dict[str, str]] = None,
+        http_client: Optional[httpx.AsyncClient] = None,
         ws_url: str = "",
-        ws_headers: dict[str, Any] | None = None,
-        ws_origin: str | None = None,
-        ws_connection_init_payload: dict[str, Any] | None = None,
+        ws_headers: Optional[dict[str, Any]] = None,
+        ws_origin: Optional[str] = None,
+        ws_connection_init_payload: Optional[dict[str, Any]] = None,
     ) -> None:
         self.url = url
         self.headers = headers
@@ -98,8 +98,8 @@ class AsyncBaseClient:
     async def execute(
         self,
         query: str,
-        operation_name: str | None = None,
-        variables: dict[str, Any] | None = None,
+        operation_name: Optional[str] = None,
+        variables: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> httpx.Response:
         processed_variables, files, files_map = self._process_variables(variables)
@@ -150,8 +150,8 @@ class AsyncBaseClient:
     async def execute_ws(
         self,
         query: str,
-        operation_name: str | None = None,
-        variables: dict[str, Any] | None = None,
+        operation_name: Optional[str] = None,
+        variables: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         headers = self.ws_headers.copy()
@@ -188,7 +188,7 @@ class AsyncBaseClient:
                     yield data
 
     def _process_variables(
-        self, variables: dict[str, Any] | None
+        self, variables: Optional[dict[str, Any]]
     ) -> tuple[
         dict[str, Any], dict[str, tuple[str, IO[bytes], str]], dict[str, list[str]]
     ]:
@@ -259,7 +259,7 @@ class AsyncBaseClient:
     async def _execute_multipart(
         self,
         query: str,
-        operation_name: str | None,
+        operation_name: Optional[str],
         variables: dict[str, Any],
         files: dict[str, tuple[str, IO[bytes], str]],
         files_map: dict[str, list[str]],
@@ -284,7 +284,7 @@ class AsyncBaseClient:
     async def _execute_json(
         self,
         query: str,
-        operation_name: str | None,
+        operation_name: Optional[str],
         variables: dict[str, Any],
         **kwargs: Any,
     ) -> httpx.Response:
@@ -320,8 +320,8 @@ class AsyncBaseClient:
         websocket: ClientConnection,
         operation_id: str,
         query: str,
-        operation_name: str | None = None,
-        variables: dict[str, Any] | None = None,
+        operation_name: Optional[str] = None,
+        variables: Optional[dict[str, Any]] = None,
     ) -> None:
         payload: dict[str, Any] = {
             "id": operation_id,
@@ -338,8 +338,8 @@ class AsyncBaseClient:
         self,
         message: Data,
         websocket: ClientConnection,
-        expected_type: GraphQLTransportWSMessageType | None = None,
-    ) -> dict[str, Any] | None:
+        expected_type: Optional[GraphQLTransportWSMessageType] = None,
+    ) -> Optional[dict[str, Any]]:
         try:
             message_dict = json.loads(message)
         except json.JSONDecodeError as exc:

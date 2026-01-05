@@ -37,8 +37,8 @@ export function useOrderListEvents(): void {
         queryClient.invalidateQueries({ queryKey: ["orders"] });
 
         // If it's an update to a specific order, also invalidate that order's query
-        if (data.type === "order_update" && data.id) {
-          queryClient.invalidateQueries({ queryKey: ["order", data.id] });
+        if (data.type === "order_update" && data.order_number) {
+          queryClient.invalidateQueries({ queryKey: ["order", data.order_number] });
         }
       } catch (error) {
         console.error("[Mercure] Failed to parse event:", error);
