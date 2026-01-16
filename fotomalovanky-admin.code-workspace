@@ -7,11 +7,12 @@
 				"python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
 				"files.exclude": {
 					".vscode": true,
+					"frontend": false,
+					"backend": false,
 				},
 			},
 			"generator.settings": {
 				"exclude": {
-					"files.exclude.frontend": true,
 					"files.exclude.backend": true,
 				}
 			}
@@ -23,14 +24,14 @@
 				"python.defaultInterpreterPath": null,
 				"files.exclude": {
 					".vscode": true,
+					"backend": false,
+					"frontend": false,
 				},
 			},
 			"generator.settings": {
 				"exclude": {
 					"python.*": true,
 					"[python]*": true,
-					"files.exclude.frontend": true,
-					"files.exclude.backend": true,
 					"flake8.*": true,
 				}
 			}
@@ -77,6 +78,7 @@
 			"!**/.env.example"
 		],
 		"workbench.externalBrowser": "firefox",
+		"workbench.editor.labelFormat": "medium",
 		"flake8.enabled": false,
 		"python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
 		"python.terminal.activateEnvironment": true,

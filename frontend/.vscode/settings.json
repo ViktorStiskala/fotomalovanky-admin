@@ -7,6 +7,8 @@
         "**/.git": true,
         "**/.DS_Store": true,
         "**/Thumbs.db": true,
+        "backend": false,
+        "frontend": false,
         "node_modules": true,
         "**/.mypy_cache": true,
         "**/.ruff_cache": true,
@@ -33,5 +35,6 @@
         "**/.cursor/mcp.json",
         "!**/.env.example"
     ],
-    "workbench.externalBrowser": "firefox"
+    "workbench.externalBrowser": "firefox",
+    "workbench.editor.labelFormat": "medium"
 }
