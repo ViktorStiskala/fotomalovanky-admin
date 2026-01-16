@@ -1,4 +1,36 @@
-import { API_BASE, SHOPIFY_STORE_HANDLE, SHOPIFY_ADMIN_BASE_URL } from "./config";
+import { API_URL, SHOPIFY_STORE_HANDLE, SHOPIFY_ADMIN_BASE_URL } from "./config";
+
+// =============================================================================
+// API Helper
+// =============================================================================
+
+interface ApiOptions extends RequestInit {
+  params?: Record<string, string | number>;
+}
+
+/**
+ * Typed fetch wrapper for API calls.
+ * Automatically prepends API_URL and handles errors.
+ */
+async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
+  const { params, ...fetchOptions } = options;
+
+  let url = `${API_URL}${endpoint}`;
+  if (params) {
+    const searchParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      searchParams.set(key, String(value));
+    }
+    url += `?${searchParams.toString()}`;
+  }
+
+  const response = await fetch(url, fetchOptions);
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw new Error(error.detail || "Request failed");
+  }
+  return response.json();
+}
 
 // =============================================================================
 // URL Helpers
@@ -135,15 +167,15 @@ export interface SvgSettings {
   group_by?: string;
 }
 
+// =============================================================================
+// Order API Functions
+// =============================================================================
+
 /**
  * Fetch list of orders with pagination
  */
 export async function fetchOrders(skip = 0, limit = 50): Promise<OrderListResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/orders?skip=${skip}&limit=${limit}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch orders");
-  }
-  return response.json();
+  return api<OrderListResponse>("/orders", { params: { skip, limit } });
 }
 
 /**
@@ -157,11 +189,7 @@ export function extractOrderNumber(shopifyOrderNumber: string): string {
  * Fetch a single order with line items and images by order number
  */
 export async function fetchOrder(orderNumber: string): Promise<OrderDetail> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch order");
-  }
-  return response.json();
+  return api<OrderDetail>(`/orders/${orderNumber}`);
 }
 
 /**
@@ -169,24 +197,16 @@ export async function fetchOrder(orderNumber: string): Promise<OrderDetail> {
  * Used for efficient updates when receiving image_status Mercure events
  */
 export async function fetchImage(orderNumber: string, imageId: number): Promise<OrderImage> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}/images/${imageId}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch image");
-  }
-  return response.json();
+  return api<OrderImage>(`/orders/${orderNumber}/images/${imageId}`);
 }
 
 /**
  * Trigger a manual sync/re-processing of an order
  */
 export async function syncOrder(orderNumber: string): Promise<{ status: string; message: string }> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}/sync`, {
+  return api<{ status: string; message: string }>(`/orders/${orderNumber}/sync`, {
     method: "POST",
   });
-  if (!response.ok) {
-    throw new Error("Failed to sync order");
-  }
-  return response.json();
 }
 
 export interface FetchFromShopifyResponse {
@@ -200,13 +220,10 @@ export interface FetchFromShopifyResponse {
  * Fetch recent orders from Shopify and import them
  */
 export async function fetchFromShopify(limit = 20): Promise<FetchFromShopifyResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/fetch-from-shopify?limit=${limit}`, {
+  return api<FetchFromShopifyResponse>("/orders/fetch-from-shopify", {
     method: "POST",
+    params: { limit },
   });
-  if (!response.ok) {
-    throw new Error("Failed to fetch from Shopify");
-  }
-  return response.json();
 }
 
 // =============================================================================
@@ -225,16 +242,11 @@ export async function generateOrderColoring(
   orderNumber: string,
   settings?: ColoringSettings
 ): Promise<GenerateColoringResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}/generate-coloring`, {
+  return api<GenerateColoringResponse>(`/orders/${orderNumber}/generate-coloring`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: settings ? JSON.stringify(settings) : undefined,
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to generate coloring" }));
-    throw new Error(error.detail || "Failed to generate coloring");
-  }
-  return response.json();
 }
 
 /**
@@ -244,16 +256,11 @@ export async function generateImageColoring(
   imageId: number,
   settings?: ColoringSettings
 ): Promise<ColoringVersion> {
-  const response = await fetch(`${API_BASE}/api/v1/images/${imageId}/generate-coloring`, {
+  return api<ColoringVersion>(`/images/${imageId}/generate-coloring`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: settings ? JSON.stringify(settings) : undefined,
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to generate coloring" }));
-    throw new Error(error.detail || "Failed to generate coloring");
-  }
-  return response.json();
 }
 
 // =============================================================================
@@ -272,16 +279,11 @@ export async function generateOrderSvg(
   orderNumber: string,
   settings?: SvgSettings
 ): Promise<GenerateSvgResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}/generate-svg`, {
+  return api<GenerateSvgResponse>(`/orders/${orderNumber}/generate-svg`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: settings ? JSON.stringify(settings) : undefined,
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to generate SVG" }));
-    throw new Error(error.detail || "Failed to generate SVG");
-  }
-  return response.json();
 }
 
 /**
@@ -291,16 +293,11 @@ export async function generateImageSvg(
   imageId: number,
   settings?: SvgSettings
 ): Promise<SvgVersion> {
-  const response = await fetch(`${API_BASE}/api/v1/images/${imageId}/generate-svg`, {
+  return api<SvgVersion>(`/images/${imageId}/generate-svg`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: settings ? JSON.stringify(settings) : undefined,
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to generate SVG" }));
-    throw new Error(error.detail || "Failed to generate SVG");
-  }
-  return response.json();
 }
 
 // =============================================================================
@@ -311,22 +308,14 @@ export async function generateImageSvg(
  * List all coloring versions for an image
  */
 export async function listColoringVersions(imageId: number): Promise<ColoringVersion[]> {
-  const response = await fetch(`${API_BASE}/api/v1/images/${imageId}/coloring-versions`);
-  if (!response.ok) {
-    throw new Error("Failed to list coloring versions");
-  }
-  return response.json();
+  return api<ColoringVersion[]>(`/images/${imageId}/coloring-versions`);
 }
 
 /**
  * List all SVG versions for an image
  */
 export async function listSvgVersions(imageId: number): Promise<SvgVersion[]> {
-  const response = await fetch(`${API_BASE}/api/v1/images/${imageId}/svg-versions`);
-  if (!response.ok) {
-    throw new Error("Failed to list SVG versions");
-  }
-  return response.json();
+  return api<SvgVersion[]>(`/images/${imageId}/svg-versions`);
 }
 
 /**
@@ -336,14 +325,10 @@ export async function selectColoringVersion(
   imageId: number,
   versionId: number
 ): Promise<{ status: string; message: string }> {
-  const response = await fetch(
-    `${API_BASE}/api/v1/images/${imageId}/select-coloring/${versionId}`,
-    { method: "POST" }
+  return api<{ status: string; message: string }>(
+    `/images/${imageId}/select-coloring/${versionId}`,
+    { method: "PUT" }
   );
-  if (!response.ok) {
-    throw new Error("Failed to select coloring version");
-  }
-  return response.json();
 }
 
 /**
@@ -353,13 +338,9 @@ export async function selectSvgVersion(
   imageId: number,
   versionId: number
 ): Promise<{ status: string; message: string }> {
-  const response = await fetch(`${API_BASE}/api/v1/images/${imageId}/select-svg/${versionId}`, {
-    method: "POST",
+  return api<{ status: string; message: string }>(`/images/${imageId}/select-svg/${versionId}`, {
+    method: "PUT",
   });
-  if (!response.ok) {
-    throw new Error("Failed to select SVG version");
-  }
-  return response.json();
 }
 
 // =============================================================================
@@ -370,26 +351,16 @@ export async function selectSvgVersion(
  * Retry a failed coloring version generation
  */
 export async function retryColoringVersion(versionId: number): Promise<ColoringVersion> {
-  const response = await fetch(`${API_BASE}/api/v1/coloring-versions/${versionId}/retry`, {
+  return api<ColoringVersion>(`/coloring-versions/${versionId}/retry`, {
     method: "POST",
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to retry coloring" }));
-    throw new Error(error.detail || "Failed to retry coloring");
-  }
-  return response.json();
 }
 
 /**
  * Retry a failed SVG version generation
  */
 export async function retrySvgVersion(versionId: number): Promise<SvgVersion> {
-  const response = await fetch(`${API_BASE}/api/v1/svg-versions/${versionId}/retry`, {
+  return api<SvgVersion>(`/svg-versions/${versionId}/retry`, {
     method: "POST",
   });
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: "Failed to retry SVG" }));
-    throw new Error(error.detail || "Failed to retry SVG");
-  }
-  return response.json();
 }

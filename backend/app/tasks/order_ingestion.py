@@ -2,55 +2,21 @@
 
 import asyncio
 import re
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import dramatiq
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from app.config import settings
+from app.tasks.utils import task_db_session
 
 if TYPE_CHECKING:
-    from app.services.shopify_client.graphql_client.get_order_details import (
+    from app.services.external.shopify_client.graphql_client.get_order_details import (
         GetOrderDetailsOrderLineItemsEdgesNode,
     )
 
 logger = structlog.get_logger(__name__)
-
-
-@asynccontextmanager
-async def task_db_session() -> AsyncGenerator[AsyncSession]:
-    """Context manager that provides a database session for background tasks.
-
-    Creates a fresh engine bound to the current event loop, yields a session,
-    and ensures proper cleanup of both the session and engine connection pool.
-
-    This is necessary because each asyncio.run() call creates a new event loop,
-    and the database connections must be bound to the current event loop.
-    """
-    engine = create_async_engine(
-        settings.database_url,
-        echo=settings.debug,
-        future=True,
-        pool_size=2,
-        max_overflow=3,
-        pool_pre_ping=True,
-    )
-    session_maker = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with session_maker() as session:
-        try:
-            yield session
-        finally:
-            pass  # Session cleanup handled by context manager
-    # Dispose engine to release all connections back to PostgreSQL
-    await engine.dispose()
 
 
 def extract_numeric_id(gid: str) -> int:
@@ -95,7 +61,7 @@ async def _process_line_item(
         True if there are images that need downloading, False otherwise
     """
     from app.models.order import LineItem
-    from app.services.shopify import parse_custom_attributes
+    from app.services.external.shopify import parse_custom_attributes
 
     shopify_line_item_id = extract_numeric_id(shopify_line_item.id)
     attrs = parse_custom_attributes(shopify_line_item.custom_attributes)
@@ -184,8 +150,8 @@ async def _ingest_order_async(order_id: int) -> None:
     """Async implementation of order ingestion."""
     from app.models.enums import OrderStatus
     from app.models.order import Order
-    from app.services.mercure import publish_order_update
-    from app.services.shopify import get_order_details
+    from app.services.external.mercure import publish_order_update
+    from app.services.external.shopify import get_order_details
     from app.tasks.image_download import download_order_images
 
     logger.info("Starting order ingestion", order_id=order_id)

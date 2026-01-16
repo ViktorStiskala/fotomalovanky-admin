@@ -8,9 +8,11 @@ import structlog
 
 from app.config import settings
 from app.models.enums import SvgProcessingStatus
-from app.services.vectorizer import VectorizerBadRequestError, VectorizerError
-from app.services.vectorizer import vectorize_image as vectorize_service
-from app.tasks.image_download import task_db_session
+from app.services.coloring.vectorizer_service import VectorizerService
+from app.services.external.vectorizer import VectorizerBadRequestError, VectorizerError
+from app.services.external.vectorizer import vectorize_image as vectorize_service
+from app.tasks.decorators import task_recover
+from app.tasks.utils import task_db_session
 
 logger = structlog.get_logger(__name__)
 
@@ -28,7 +30,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
     """Async implementation of SVG vectorization."""
     from app.models.coloring import ColoringVersion, SvgVersion
     from app.models.order import Image, LineItem, Order
-    from app.services.mercure import publish_image_status
+    from app.services.external.mercure import publish_image_status
 
     logger.info("Starting SVG vectorization", svg_version_id=svg_version_id)
 
@@ -190,6 +192,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             raise
 
 
+@task_recover(VectorizerService.get_incomplete_versions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000, throws=VectorizerBadRequestError)
 def vectorize_image(svg_version_id: int) -> None:
     """

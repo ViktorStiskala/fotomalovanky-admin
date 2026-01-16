@@ -3,12 +3,12 @@
 import structlog
 
 from app.config import settings
-from app.services.shopify_client.graphql_client import ShopifyClient
-from app.services.shopify_client.graphql_client.get_order_details import (
+from app.services.external.shopify_client.graphql_client import ShopifyClient
+from app.services.external.shopify_client.graphql_client.get_order_details import (
     GetOrderDetailsOrder,
     GetOrderDetailsOrderLineItemsEdgesNodeCustomAttributes,
 )
-from app.services.shopify_client.graphql_client.list_recent_orders import (
+from app.services.external.shopify_client.graphql_client.list_recent_orders import (
     ListRecentOrdersOrders,
 )
 

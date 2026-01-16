@@ -9,19 +9,33 @@ backend/
 ├── app/
 │   ├── api/v1/              # API endpoints
 │   │   ├── health.py        # Health check endpoint
-│   │   ├── orders.py        # Order management endpoints
+│   │   ├── orders/          # Order management endpoints (package)
+│   │   │   ├── schemas.py       # Pydantic request/response models
+│   │   │   ├── dependencies.py  # FastAPI service dependencies
+│   │   │   ├── order_routes.py  # Order CRUD endpoints
+│   │   │   ├── image_routes.py  # Image and version endpoints
+│   │   │   ├── coloring_routes.py # Coloring generation endpoints
+│   │   │   └── svg_routes.py    # SVG generation endpoints
 │   │   └── webhooks.py      # Shopify webhook handlers
 │   ├── graphql/queries/     # Shopify GraphQL queries
 │   ├── models/              # SQLModel database models
 │   │   ├── coloring.py      # ColoringVersion, SvgVersion
 │   │   ├── enums.py         # Status enums
 │   │   └── order.py         # Order, LineItem, Image
-│   ├── services/            # Business logic
-│   │   ├── mercure.py       # Mercure SSE publishing
-│   │   ├── runpod.py        # RunPod API client
-│   │   ├── shopify.py       # Shopify API client
-│   │   ├── shopify_client/  # Generated GraphQL client
-│   │   └── vectorizer.py    # Vectorizer.ai client
+│   ├── services/            # Service layer (business logic)
+│   │   ├── exceptions.py    # Custom service exceptions
+│   │   ├── orders/          # Order-related services
+│   │   │   ├── order_service.py   # Order CRUD, sync, fetch
+│   │   │   └── image_service.py   # Image queries, version selection
+│   │   ├── processing/      # Processing services
+│   │   │   ├── coloring_service.py # Coloring generation/retry
+│   │   │   └── svg_service.py      # SVG generation/retry
+│   │   └── external/        # Third-party API integrations
+│   │       ├── mercure.py       # Mercure SSE publishing
+│   │       ├── runpod.py        # RunPod API client
+│   │       ├── shopify.py       # Shopify API client
+│   │       ├── shopify_client/  # Generated GraphQL client
+│   │       └── vectorizer.py    # Vectorizer.ai client
 │   ├── tasks/               # Dramatiq background tasks
 │   │   ├── image_download.py
 │   │   ├── order_ingestion.py
@@ -141,8 +155,8 @@ Status flow for SVG vectorization (Vectorizer.ai):
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/images/{image_id}/select-coloring/{version_id}` | Select coloring |
-| POST | `/api/v1/images/{image_id}/select-svg/{version_id}` | Select SVG |
+| PUT | `/api/v1/images/{image_id}/select-coloring/{version_id}` | Select coloring |
+| PUT | `/api/v1/images/{image_id}/select-svg/{version_id}` | Select SVG |
 
 ## Mercure Events
 

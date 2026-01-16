@@ -32,7 +32,10 @@ export const COLORING_STATUS_DISPLAY: Record<string, { label: string; color: str
   runpod_submitting: { label: "Runpod: odesílání na server", color: "bg-blue-100 text-blue-800" },
   runpod_submitted: { label: "Runpod: úloha přijata", color: "bg-blue-100 text-blue-800" },
   runpod_queued: { label: "Runpod: čeká ve frontě", color: "bg-yellow-100 text-yellow-800" },
-  runpod_processing: { label: "Runpod: Probíhá zpracování", color: "bg-yellow-100 text-yellow-800" },
+  runpod_processing: {
+    label: "Runpod: Probíhá zpracování",
+    color: "bg-yellow-100 text-yellow-800",
+  },
   completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
   error: { label: "Chyba", color: "bg-red-100 text-red-800" },
 };
@@ -44,7 +47,10 @@ export const SVG_STATUS_DISPLAY: Record<string, { label: string; color: string }
   pending: { label: "Čeká na odeslání", color: "bg-gray-100 text-gray-800" },
   queued: { label: "Čeká ve frontě", color: "bg-blue-100 text-blue-800" },
   processing: { label: "Zpracovává se...", color: "bg-blue-100 text-blue-800" },
-  vectorizer_processing: { label: "Vectorizer: Probíhá zpracování", color: "bg-yellow-100 text-yellow-800" },
+  vectorizer_processing: {
+    label: "Vectorizer: Probíhá zpracování",
+    color: "bg-yellow-100 text-yellow-800",
+  },
   completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
   error: { label: "Chyba", color: "bg-red-100 text-red-800" },
 };
@@ -91,4 +97,38 @@ export const PAYMENT_STATUS_DISPLAY: Record<string, { label: string; color: stri
 export function getPaymentStatusDisplay(status: string | null): { label: string; color: string } {
   if (!status) return { label: "—", color: "" };
   return PAYMENT_STATUS_DISPLAY[status] || { label: status, color: "bg-gray-100 text-gray-800" };
+}
+
+// =============================================================================
+// SVG Options Label Helpers
+// =============================================================================
+
+/**
+ * Shape stacking option labels (Czech)
+ */
+export const SHAPE_STACKING_LABELS: Record<string, string> = {
+  stacked: "Vrstvené",
+  none: "Žádné",
+};
+
+/**
+ * Group by option labels (Czech)
+ */
+export const GROUP_BY_LABELS: Record<string, string> = {
+  color: "Podle barvy",
+  none: "Žádné",
+};
+
+/**
+ * Get localized label for shape stacking option.
+ */
+export function getShapeStackingLabel(value: string): string {
+  return SHAPE_STACKING_LABELS[value] || value;
+}
+
+/**
+ * Get localized label for group by option.
+ */
+export function getGroupByLabel(value: string): string {
+  return GROUP_BY_LABELS[value] || value;
 }

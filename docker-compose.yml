@@ -91,7 +91,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       MERCURE_URL: http://mercure:3000/.well-known/mercure
       STORAGE_PATH: /data/images
-      BACKEND_CORS_ORIGINS: '["http://localhost:5173", "http://127.0.0.1:5173"]'
+      BACKEND_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,7 +120,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       MERCURE_URL: http://mercure:3000/.well-known/mercure
       STORAGE_PATH: /data/images
-      BACKEND_CORS_ORIGINS: '["http://localhost:5173", "http://127.0.0.1:5173"]'
+      BACKEND_CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,7 +144,7 @@ services:
       - "5173:5173"
     env_file: .env
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_URL: http://localhost:8000/api/v1
       VITE_MERCURE_URL: ${MERCURE_URL:-http://localhost:3000/.well-known/mercure}
       VITE_SHOPIFY_STORE_HANDLE: ${SHOPIFY_STORE_HANDLE:-}
     depends_on:

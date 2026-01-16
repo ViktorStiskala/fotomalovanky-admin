@@ -1,0 +1,269 @@
+---
+description: Backend architecture rules and constraints
+alwaysApply: true
+---
+
+# Backend Architecture Rules
+
+## Service Layer Architecture (MANDATORY)
+
+**NEVER** put business logic directly in API route handlers. API routes MUST be thin wrappers that:
+1. Parse and validate request parameters
+2. Call service methods
+3. Dispatch Dramatiq tasks for background processing
+4. Map service exceptions to HTTP responses
+5. Return serialized responses
+
+### Service Layer Structure
+
+```
+app/services/
+├── exceptions.py              # Base service exceptions (ServiceError, NotFoundError, ValidationError)
+├── orders/                    # Domain: order management
+│   ├── exceptions.py          # OrderNotFound, ImageNotFound, etc.
+│   ├── order_service.py
+│   └── image_service.py
+├── coloring/                  # Domain: image processing
+│   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
+│   ├── coloring_service.py
+│   └── vectorizer_service.py
+└── external/                  # Third-party integrations
+    ├── mercure.py
+    ├── runpod.py
+    ├── shopify.py
+    └── vectorizer.py
+```
+
+### Service Class Pattern
+
+```python
+class OrderService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_order(self, order_number: str) -> Order:
+        """Business logic here, raises custom exceptions."""
+        order = await self._fetch_order(order_number)
+        if not order:
+            raise OrderNotFound()
+        return order
+```
+
+### API Route Pattern
+
+```python
+@router.get("/orders/{order_number}")
+async def get_order(order_number: str, service: OrderServiceDep) -> OrderResponse:
+    try:
+        order = await service.get_order(order_number)
+        return OrderResponse.from_model(order)
+    except OrderNotFound:
+        raise HTTPException(404, "Order not found")
+```
+
+## Dramatiq Tasks Architecture (MANDATORY)
+
+Tasks MUST be thin wrappers that:
+1. Set up database session via `task_db_session()`
+2. Call service methods for ALL business logic
+3. Handle task-specific concerns (retries, timeouts)
+4. Publish Mercure notifications for status updates
+
+**NEVER** put business logic in tasks. If new logic is needed, add a service method first.
+
+### Task Pattern
+
+```python
+from app.tasks.utils import task_db_session
+from app.tasks.decorators import task_recover
+
+@task_recover(ColoringService.get_incomplete_versions)
+@dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
+def generate_coloring(version_id: int) -> None:
+    async def _run():
+        async with task_db_session() as session:
+            service = ColoringService(session)
+            await service.process_version(version_id)
+    asyncio.run(_run())
+```
+
+### External API Calls
+
+- **NEVER** call external APIs from FastAPI workers (Shopify, RunPod, Vectorizer)
+- **ALL** external API calls MUST happen in Dramatiq tasks
+- Services contain the API call logic, tasks handle orchestration and error handling
+
+## Import Rules (MANDATORY)
+
+### No Re-exports (HARD CONSTRAINT)
+
+- **NEVER** re-export from `__init__.py` files - keep them empty (docstring only)
+- **NEVER** create "backward compatibility" modules that only re-export from elsewhere
+- **ALWAYS** use explicit imports from the actual module where code is defined
+- Use `TYPE_CHECKING` imports for type hints that would cause circular imports
+
+### Examples
+
+```python
+# BAD - importing from package __init__.py
+from app.services import ColoringService
+from app.utils import normalize_order_number
+
+# BAD - importing from re-export wrapper
+from app.services.mercure import publish_order_update
+
+# GOOD - explicit imports from actual modules
+from app.services.coloring.coloring_service import ColoringService
+from app.utils.shopify_helpers import normalize_order_number
+from app.services.external.mercure import publish_order_update
+```
+
+## Custom Exceptions (MANDATORY)
+
+**NEVER** raise `HTTPException` from service layer. Define typed exceptions in domain-specific exception files:
+
+```python
+# services/exceptions.py - base exceptions only
+class ServiceError(Exception):
+    """Base service exception."""
+
+class NotFoundError(ServiceError):
+    """Resource not found."""
+
+class ValidationError(ServiceError):
+    """Validation error."""
+
+# services/orders/exceptions.py - order domain
+from app.services.exceptions import NotFoundError, ValidationError
+
+class OrderNotFound(NotFoundError):
+    """Order not found."""
+
+class ImageNotFound(NotFoundError):
+    """Image not found."""
+```
+
+## Code Organization Rules
+
+### Complex Logic MUST Be Split
+
+When a file exceeds ~200 lines or contains multiple distinct concerns:
+- Split into a **folder** with multiple files
+- Keep `__init__.py` empty (docstring only)
+- Group related functionality together
+
+Example:
+```
+# BAD: Single 1000-line file
+app/api/v1/orders.py
+
+# GOOD: Organized folder structure
+app/api/v1/orders/
+├── __init__.py           # Empty (docstring only)
+├── schemas.py            # Pydantic models
+├── dependencies.py       # FastAPI dependencies
+├── order_routes.py       # Order CRUD
+├── image_routes.py       # Image endpoints
+└── coloring_routes.py    # Coloring endpoints
+```
+
+### Helper Functions MUST Be Extracted
+
+- **NEVER** duplicate logic across files
+- Extract shared helpers to appropriate utility modules
+- Use `app/utils/` for cross-cutting utilities
+- Use service-specific `_helpers.py` for domain helpers
+
+### Dependency Injection Pattern
+
+Use FastAPI's `Depends` with type aliases:
+
+```python
+# dependencies.py
+async def get_order_service(session: Annotated[AsyncSession, Depends(get_session)]) -> OrderService:
+    return OrderService(session)
+
+OrderServiceDep = Annotated[OrderService, Depends(get_order_service)]
+
+# routes.py
+@router.get("/orders")
+async def list_orders(service: OrderServiceDep) -> list[OrderResponse]:
+    ...
+```
+
+## Pydantic Schemas
+
+### Use `from_model` Factory Methods
+
+```python
+class OrderResponse(BaseModel):
+    id: int
+    status: str
+
+    @classmethod
+    def from_model(cls, order: Order) -> "OrderResponse":
+        return cls(id=order.id, status=order.status.value)
+```
+
+### Datetime Serialization
+
+Use the shared timezone helper:
+
+```python
+from app.utils.datetime_utils import to_api_timezone
+
+@field_serializer("created_at")
+def serialize_dt(self, dt: datetime) -> str:
+    return to_api_timezone(dt).isoformat()
+```
+
+## HTTP Method Guidelines
+
+| Action | Method | Notes |
+|--------|--------|-------|
+| Read resource | GET | |
+| Create resource | POST | |
+| Update resource state | PUT | e.g., selecting a version |
+| Trigger action | POST | e.g., retry, sync, generate |
+| Delete resource | DELETE | |
+
+## Database Queries
+
+### Eager Loading
+
+Always use `selectinload` for related objects to avoid N+1 queries:
+
+```python
+select(Order).options(
+    selectinload(Order.line_items)
+    .selectinload(LineItem.images)
+)
+```
+
+### Version Numbering with Race Condition Handling
+
+Handle concurrent version creation:
+
+```python
+async def _create_version_with_retry(self, ...) -> ColoringVersion:
+    """Create version with retry on conflict."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        next_version = await self._get_next_version(image_id)
+        version = ColoringVersion(version=next_version, ...)
+        self.session.add(version)
+        try:
+            await self.session.flush()
+            return version
+        except IntegrityError:
+            await self.session.rollback()
+            if attempt == max_retries - 1:
+                raise
+    raise RuntimeError("Failed to create version after retries")
+```
+
+## Testing Considerations
+
+- Services are independently testable (inject mock session)
+- API routes can be tested with TestClient
+- Exceptions provide clear failure modes

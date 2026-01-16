@@ -29,22 +29,19 @@ export function useOrderEvents(orderNumber: string): void {
           const imageData = await fetchImage(orderNumber, event.image_id);
 
           // Update the cache by replacing just this image in the order data
-          queryClient.setQueryData<OrderDetail>(
-            ["order", orderNumber],
-            (oldData) => {
-              if (!oldData) return oldData;
+          queryClient.setQueryData<OrderDetail>(["order", orderNumber], (oldData) => {
+            if (!oldData) return oldData;
 
-              return {
-                ...oldData,
-                line_items: oldData.line_items.map((li) => ({
-                  ...li,
-                  images: li.images.map((img: OrderImage) =>
-                    img.id === event.image_id ? imageData : img
-                  ),
-                })),
-              };
-            }
-          );
+            return {
+              ...oldData,
+              line_items: oldData.line_items.map((li) => ({
+                ...li,
+                images: li.images.map((img: OrderImage) =>
+                  img.id === event.image_id ? imageData : img
+                ),
+              })),
+            };
+          });
         } catch (error) {
           console.error("[Mercure] Failed to fetch image:", error);
           // Fallback: invalidate the whole order query

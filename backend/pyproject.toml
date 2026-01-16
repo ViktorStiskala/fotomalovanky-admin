@@ -44,7 +44,7 @@ default-groups = ["dev"]
 [tool.ruff]
 line-length = 120
 target-version = "py314"
-exclude = ["app/services/shopify_client/"]
+exclude = ["app/services/external/shopify_client/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "T20", "RUF032"] # disabled "B" and "C90"; RUF032 detects Decimal() called with float literals
@@ -59,14 +59,14 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
-exclude = ["app/services/shopify_client/"]
+exclude = ["app/services/external/shopify_client/"]
 
 [[tool.mypy.overrides]]
 module = "dramatiq.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = "app.services.shopify_client.*"
+module = "app.services.external.shopify_client.*"
 ignore_errors = true
 
 [tool.pytest.ini_options]
@@ -88,7 +88,7 @@ packages = ["app"]
 remote_schema_url = "https://aqi8it-7n.myshopify.com/admin/api/2025-01/graphql.json"
 remote_schema_headers = { X-Shopify-Access-Token = "$SHOPIFY_ACCESS_TOKEN" }
 queries_path = "app/graphql/queries"
-target_package_path = "app/services/shopify_client"
+target_package_path = "app/services/external/shopify_client"
 async_client = true
 client_name = "ShopifyClient"
 plugins = ["ariadne_codegen.contrib.shorter_results.ShorterResultsPlugin"]

@@ -1,15 +1,13 @@
 """Image download background task."""
 
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import dramatiq
 import httpx
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 from tenacity import (
@@ -19,44 +17,12 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config import settings
+from app.tasks.utils import task_db_session
 
 if TYPE_CHECKING:
     from app.models.order import Image, Order
 
 logger = structlog.get_logger(__name__)
-
-
-@asynccontextmanager
-async def task_db_session() -> AsyncGenerator[AsyncSession]:
-    """Context manager that provides a database session for background tasks.
-
-    Creates a fresh engine bound to the current event loop, yields a session,
-    and ensures proper cleanup of both the session and engine connection pool.
-
-    This is necessary because each asyncio.run() call creates a new event loop,
-    and the database connections must be bound to the current event loop.
-    """
-    engine = create_async_engine(
-        settings.database_url,
-        echo=settings.debug,
-        future=True,
-        pool_size=2,
-        max_overflow=3,
-        pool_pre_ping=True,
-    )
-    session_maker = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with session_maker() as session:
-        try:
-            yield session
-        finally:
-            pass  # Session cleanup handled by context manager
-    # Dispose engine to release all connections back to PostgreSQL
-    await engine.dispose()
 
 
 @retry(
@@ -156,7 +122,7 @@ async def _download_order_images_async(order_id: int) -> None:
     """Async implementation of image downloading."""
     from app.models.enums import OrderStatus
     from app.models.order import LineItem, Order
-    from app.services.mercure import publish_order_update
+    from app.services.external.mercure import publish_order_update
 
     logger.info("Starting image download task", order_id=order_id)
 
@@ -195,7 +161,7 @@ async def _process_image_downloads(
 ) -> None:
     """Process all image downloads for an order."""
     from app.models.enums import OrderStatus
-    from app.services.mercure import publish_order_update
+    from app.services.external.mercure import publish_order_update
 
     # Update status to DOWNLOADING
     order.status = OrderStatus.DOWNLOADING

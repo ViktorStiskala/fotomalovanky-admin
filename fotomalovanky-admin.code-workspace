@@ -57,10 +57,13 @@
 			"**/.ruff_cache": true,
 			"**/__pycache__": true,
 			"**/*.pyc": true,
+			"**/.env.example": false,
+			"**/.docker/**": false,
+			"**/.cursor/**": false,
+			"**/.dockerignore": false,
 		},
 		"cursor.general.globalCursorIgnoreList": [
 			"**/.env",
-			"**/.env.*",
 			"**/credentials.json",
 			"**/credentials.*.json",
 			"**/secret.json",
@@ -74,8 +77,6 @@
 			"**/id_rsa",
 			"**/id_dsa",
 			"**/.ssh/id_*",
-			"**/.cursor/mcp.json",
-			"!**/.env.example"
 		],
 		"workbench.externalBrowser": "firefox",
 		"workbench.editor.labelFormat": "medium",

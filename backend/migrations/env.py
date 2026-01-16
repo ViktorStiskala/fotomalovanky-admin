@@ -5,8 +5,13 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from sqlmodel import SQLModel
+
 from app.config import settings
-from app.models import SQLModel  # noqa: F401 - imports all models
+
+# Import all models to register them with SQLAlchemy
+import app.models.order  # noqa: F401
+import app.models.coloring  # noqa: F401
 
 config = context.config
 

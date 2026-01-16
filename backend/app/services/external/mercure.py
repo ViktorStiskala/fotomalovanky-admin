@@ -96,7 +96,6 @@ async def publish_order_update(order_number: str) -> bool:
     Returns:
         True if published successfully, False otherwise
     """
-    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
     clean_order_number = order_number.lstrip("#")
 
     return await _publish_to_mercure(
@@ -135,7 +134,6 @@ async def publish_image_update(
     Returns:
         True if published successfully, False otherwise
     """
-    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
     clean_order_number = order_number.lstrip("#")
 
     data = json.dumps(
@@ -180,7 +178,6 @@ async def publish_image_status(
     Returns:
         True if published successfully, False otherwise
     """
-    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
     clean_order_number = order_number.lstrip("#")
 
     data = json.dumps(

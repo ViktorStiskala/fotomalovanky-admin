@@ -29,10 +29,10 @@ redis_broker = RedisBroker(url=settings.redis_url)  # type: ignore[no-untyped-ca
 redis_broker.add_middleware(TaskRecoveryMiddleware())
 dramatiq.set_broker(redis_broker)
 
-# Import and re-export all tasks (must be after broker setup)
-from app.tasks.image_download import download_order_images  # noqa: E402
-from app.tasks.order_ingestion import ingest_order  # noqa: E402
-from app.tasks.process.generate_coloring import generate_coloring  # noqa: E402
-from app.tasks.process.vectorize_image import vectorize_image  # noqa: E402
-
-__all__ = ["ingest_order", "download_order_images", "generate_coloring", "vectorize_image"]
+# Import all tasks to register them with Dramatiq (must be after broker setup)
+# These imports are required for task discovery, not for re-export
+import app.tasks.fetch_shopify  # noqa: E402, F401
+import app.tasks.image_download  # noqa: E402, F401
+import app.tasks.order_ingestion  # noqa: E402, F401
+import app.tasks.process.generate_coloring  # noqa: E402, F401
+import app.tasks.process.vectorize_image  # noqa: E402, F401

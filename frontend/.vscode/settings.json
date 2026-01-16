@@ -14,11 +14,14 @@
         "**/.ruff_cache": true,
         "**/__pycache__": true,
         "**/*.pyc": true,
+        "**/.env.example": false,
+        "**/.docker/**": false,
+        "**/.cursor/**": false,
+        "**/.dockerignore": false,
         ".vscode": true
     },
     "cursor.general.globalCursorIgnoreList": [
         "**/.env",
-        "**/.env.*",
         "**/credentials.json",
         "**/credentials.*.json",
         "**/secret.json",
@@ -31,9 +34,7 @@
         "**/*.cer",
         "**/id_rsa",
         "**/id_dsa",
-        "**/.ssh/id_*",
-        "**/.cursor/mcp.json",
-        "!**/.env.example"
+        "**/.ssh/id_*"
     ],
     "workbench.externalBrowser": "firefox",
     "workbench.editor.labelFormat": "medium"

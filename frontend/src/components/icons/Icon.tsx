@@ -1,6 +1,10 @@
 import type { SVGProps } from "react";
 
-export type IconName = "fullscreen" | "refresh" | "close-box-outline";
+/**
+ * Available icon names.
+ * AUTO-GENERATED - DO NOT EDIT MANUALLY
+ */
+export type IconName = "placeholder";
 
 interface IconProps extends SVGProps<SVGSVGElement> {
   name: IconName;

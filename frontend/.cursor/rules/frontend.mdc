@@ -1,0 +1,199 @@
+---
+description: Frontend architecture rules and constraints
+alwaysApply: true
+---
+
+# Frontend Architecture Rules
+
+## Component Organization (MANDATORY)
+
+### Large Components MUST Be Split
+
+When a component file exceeds ~300 lines or contains multiple distinct UI sections:
+- Convert to a **folder** with the same name
+- Extract sub-components into `components/` subfolder
+- Extract hooks into `hooks/` subfolder
+- Use `index.tsx` to re-export the main component
+
+Example:
+```
+# BAD: Single 900-line file
+src/pages/OrderDetail.tsx
+
+# GOOD: Organized folder structure
+src/pages/OrderDetail/
+├── index.tsx                    # Re-export
+├── OrderDetail.tsx              # Main component (~200 lines)
+├── ImageCard.tsx                # Major sub-component
+├── components/
+│   ├── OriginalImageDisplay.tsx
+│   ├── ColoringControls.tsx
+│   ├── SvgControls.tsx
+│   ├── VersionTabs.tsx
+│   └── ImagePreviewDialog.tsx
+└── hooks/
+    └── useImageMutations.ts
+```
+
+## Custom Hooks Pattern
+
+### Extract Related Mutations
+
+When a component has multiple related mutations, extract to a custom hook:
+
+```typescript
+// hooks/useImageMutations.ts
+export function useImageMutations(imageId: number, orderNumber: string) {
+  const generateColoringMutation = useMutation({
+    mutationFn: () => generateImageColoring(imageId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["order", orderNumber] }),
+  });
+
+  const generateSvgMutation = useMutation({...});
+  const selectColoringMutation = useMutation({...});
+
+  return {
+    generateColoringMutation,
+    generateSvgMutation,
+    selectColoringMutation,
+  };
+}
+```
+
+## Code Duplication Rules
+
+### NEVER Duplicate Logic
+
+- Extract shared logic to `lib/` utilities
+- Create helper functions for repeated patterns
+- Use shared hooks for common data fetching patterns
+
+### Status Checking Utilities
+
+Extract to `lib/statusHelpers.ts`:
+
+```typescript
+export const COLORING_PROCESSING_STATUSES = [
+  "queued", "processing", "runpod_submitting",
+  "runpod_submitted", "runpod_queued", "runpod_processing"
+] as const;
+
+export function isColoringProcessing(versions: ColoringVersion[]): boolean {
+  return versions.some((cv) =>
+    COLORING_PROCESSING_STATUSES.includes(cv.status as any)
+  );
+}
+
+export function hasCompletedColoring(versions: ColoringVersion[]): boolean {
+  return versions.some((cv) => cv.status === "completed");
+}
+```
+
+### Display Label Helpers
+
+Put in `types/index.ts` alongside status display configs:
+
+```typescript
+export function getShapeStackingLabel(value: string): string {
+  const labels: Record<string, string> = {
+    stacked: "Vrstvené",
+    none: "Žádné",
+  };
+  return labels[value] || value;
+}
+```
+
+## API Layer
+
+### Use Typed API Helper
+
+**NEVER** construct fetch URLs manually. Use the `api()` helper:
+
+```typescript
+// lib/api.ts
+async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
+  const { params, ...fetchOptions } = options;
+  let url = `${API_URL}${endpoint}`;
+  // ... params handling, error handling
+}
+
+// Usage - endpoint is relative to API_URL (which includes /api/v1)
+export async function fetchOrders(skip = 0, limit = 50): Promise<OrderListResponse> {
+  return api<OrderListResponse>("/orders", { params: { skip, limit } });
+}
+
+export async function syncOrder(orderNumber: string): Promise<StatusResponse> {
+  return api<StatusResponse>(`/orders/${orderNumber}/sync`, { method: "POST" });
+}
+
+export async function selectColoringVersion(imageId: number, versionId: number): Promise<StatusResponse> {
+  return api<StatusResponse>(`/images/${imageId}/select-coloring/${versionId}`, { method: "PUT" });
+}
+```
+
+### API URL Configuration
+
+`VITE_API_URL` environment variable contains the **full base URL including `/api/v1`**:
+- Local dev (with Vite proxy): `/api/v1` (default)
+- Production/Docker: `http://backend:8000/api/v1`
+
+### HTTP Methods
+
+- `GET` - Read operations
+- `POST` - Create resources, trigger actions
+- `PUT` - Update resource state (e.g., selecting a version)
+
+## State Management
+
+### TanStack Query for Server State
+
+- Use `useQuery` for data fetching
+- Use `useMutation` for modifications
+- Invalidate queries on mutation success
+- Use query keys consistently: `["order", orderNumber]`, `["orders"]`
+
+### Local State
+
+- Use `useState` for UI-only state (modals, form inputs, tabs)
+- Keep state as close to where it's used as possible
+- Lift state only when multiple components need it
+
+## Component Props
+
+### Use Interface for Props
+
+```typescript
+interface ImageCardProps {
+  image: OrderImage;
+  orderNumber: string;
+  onPreview?: (src: string, alt: string) => void;
+}
+
+function ImageCard({ image, orderNumber, onPreview }: ImageCardProps) {
+  // ...
+}
+```
+
+### Avoid Prop Drilling
+
+- Pass only what's needed
+- Use context for deeply shared state
+- Extract hooks that encapsulate logic + data
+
+## File Naming
+
+- Components: `PascalCase.tsx` (e.g., `ImageCard.tsx`)
+- Hooks: `camelCase.ts` with `use` prefix (e.g., `useImageMutations.ts`)
+- Utilities: `camelCase.ts` (e.g., `statusHelpers.ts`)
+- Types: `index.ts` in `types/` folder
+
+## Icon System
+
+Icons are auto-generated from usage. To add a new icon:
+1. Use `<Icon name="mdi-icon-name" />` in your component
+2. The Vite plugin will automatically:
+   - Scan for icon usage
+   - Add the icon to `IconSprite.tsx`
+   - Update the `IconName` type
+
+Icon naming: `{prefix}-{name}` (e.g., `mdi-fullscreen`, `mdi-refresh`)

@@ -12,8 +12,8 @@ from app.config import settings
 from app.db import async_session_maker
 from app.models.enums import OrderStatus
 from app.models.order import Order
-from app.services.mercure import publish_order_list_update
-from app.tasks import ingest_order
+from app.services.external.mercure import publish_order_list_update
+from app.tasks.order_ingestion import ingest_order
 
 logger = structlog.get_logger(__name__)
 

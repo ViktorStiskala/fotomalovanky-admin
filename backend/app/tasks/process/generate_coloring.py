@@ -9,8 +9,10 @@ import structlog
 
 from app.config import settings
 from app.models.enums import ColoringProcessingStatus
-from app.services.runpod import RunPodError, poll_job, submit_job
-from app.tasks.image_download import task_db_session
+from app.services.coloring.coloring_service import ColoringService
+from app.services.external.runpod import RunPodError, poll_job, submit_job
+from app.tasks.decorators import task_recover
+from app.tasks.utils import task_db_session
 
 logger = structlog.get_logger(__name__)
 
@@ -28,7 +30,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
     """Async implementation of coloring generation."""
     from app.models.coloring import ColoringVersion
     from app.models.order import Image, LineItem, Order
-    from app.services.mercure import publish_image_status
+    from app.services.external.mercure import publish_image_status
 
     logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
 
@@ -179,6 +181,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             raise
 
 
+@task_recover(ColoringService.get_incomplete_versions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
 def generate_coloring(coloring_version_id: int) -> None:
     """

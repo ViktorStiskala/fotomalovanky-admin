@@ -1,6 +1,7 @@
 """Enum definitions for database models."""
 
 from enum import StrEnum
+from typing import Self
 
 
 class OrderStatus(StrEnum):
@@ -11,20 +12,6 @@ class OrderStatus(StrEnum):
     PROCESSING = "processing"
     READY_FOR_REVIEW = "ready_for_review"
     ERROR = "error"
-
-
-class ImageProcessingStatus(StrEnum):
-    """Status of image processing (coloring generation or SVG vectorization).
-
-    DEPRECATED: Use ColoringProcessingStatus or SvgProcessingStatus instead.
-    Kept for migration compatibility only.
-    """
-
-    PENDING = "pending"  # Not yet queued
-    QUEUED = "queued"  # Task enqueued
-    PROCESSING = "processing"  # Currently processing
-    COMPLETED = "completed"  # Successfully completed
-    ERROR = "error"  # Processing failed
 
 
 class ColoringProcessingStatus(StrEnum):
@@ -40,6 +27,19 @@ class ColoringProcessingStatus(StrEnum):
     COMPLETED = "completed"
     ERROR = "error"
 
+    @classmethod
+    def intermediate_states(cls) -> frozenset[Self]:
+        """States that indicate task was interrupted mid-processing."""
+        return frozenset(
+            {
+                cls.PROCESSING,
+                cls.RUNPOD_SUBMITTING,
+                cls.RUNPOD_SUBMITTED,
+                cls.RUNPOD_QUEUED,
+                cls.RUNPOD_PROCESSING,
+            }
+        )
+
 
 class SvgProcessingStatus(StrEnum):
     """Status for SVG vectorization (Vectorizer.ai)."""
@@ -50,3 +50,13 @@ class SvgProcessingStatus(StrEnum):
     VECTORIZER_PROCESSING = "vectorizer_processing"  # HTTP request in progress
     COMPLETED = "completed"
     ERROR = "error"
+
+    @classmethod
+    def intermediate_states(cls) -> frozenset[Self]:
+        """States that indicate task was interrupted mid-processing."""
+        return frozenset(
+            {
+                cls.PROCESSING,
+                cls.VECTORIZER_PROCESSING,
+            }
+        )

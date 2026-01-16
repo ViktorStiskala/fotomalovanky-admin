@@ -1,6 +1,8 @@
 """Application configuration using pydantic-settings."""
 
-from pydantic import field_validator
+import json
+
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,19 +57,25 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "info"
     timezone: str = "Europe/Prague"
-    backend_cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
-    @field_validator("backend_cors_origins", mode="before")
-    @classmethod
-    def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
-        if isinstance(v, str):
-            if v.startswith("["):
-                import json
+    # CORS origins - stored as string to avoid pydantic-settings JSON parsing
+    # Supports comma-separated values or JSON array format
+    backend_cors_origins_str: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        validation_alias="BACKEND_CORS_ORIGINS",
+    )
 
-                result: list[str] = json.loads(v)
-                return result
-            return [i.strip() for i in v.split(",")]
-        return v
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def backend_cors_origins(self) -> list[str]:
+        """Parse CORS origins from string (comma-separated or JSON array)."""
+        v = self.backend_cors_origins_str
+        if not v:
+            return []
+        if v.startswith("["):
+            result: list[str] = json.loads(v)
+            return result
+        return [origin.strip() for origin in v.split(",") if origin.strip()]
 
 
 settings = Settings()  # type: ignore[call-arg]  # pydantic-settings loads from env

@@ -4,6 +4,11 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.models.coloring  # noqa: F401
+
+# Register all models with SQLAlchemy (required for relationship resolution)
+# Import order matters: order.py defines Image, coloring.py references it
+import app.models.order  # noqa: F401
 from app.config import settings
 
 engine = create_async_engine(

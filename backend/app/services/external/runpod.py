@@ -56,7 +56,6 @@ def _ensure_min_resolution(image_data: bytes) -> bytes:
         max_dim = max(width, height)
 
         if max_dim >= settings.min_image_size:
-            # Image is large enough
             return image_data
 
         # Calculate scale factor to reach minimum size
