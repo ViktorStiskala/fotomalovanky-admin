@@ -1,6 +1,6 @@
 ---
 name: Separate Processing Status Enums
-overview: Create separate status enums for coloring and SVG processing with granular RunPod/Vectorizer statuses, restructure API to use versions.coloring/svg with options objects and file_url (served by nginx), add efficient Mercure events for real-time status updates.
+overview: Create separate status enums for coloring and SVG processing with granular RunPod/Vectorizer statuses, restructure API to use versions.coloring/svg with options objects and url (served by nginx), add efficient Mercure events for real-time status updates.
 todos:
   - id: backend-enums
     content: Create ColoringProcessingStatus and SvgProcessingStatus enums in enums.py
@@ -45,7 +45,7 @@ todos:
     content: Add nginx service to docker-compose for serving static files on port 8081
     status: pending
   - id: api-restructure
-    content: Restructure API responses - versions.coloring/svg with options object, file_url instead of file_path
+    content: Restructure API responses - versions.coloring/svg with options object, url instead of file_path
     status: pending
   - id: api-remove-file-endpoints
     content: Remove FastAPI file serving endpoints (images, coloring-versions/file, svg-versions/file) - nginx serves these
@@ -58,6 +58,9 @@ todos:
     status: pending
   - id: readme-docs
     content: Update root README.md (remove project structure, add links), create frontend/README.md and backend/README.md with details
+    status: pending
+  - id: file-paths
+    content: Update file path structure for colorings/SVGs to order_id/line_item_id/[coloring|svg]/v<version>/image_<position>.suffix
     status: pending
 ---
 
@@ -127,7 +130,7 @@ Note: This URL is returned in API responses for the browser to fetch files. It m
 
 **URL generation** - files stored at `/data/images/42/1/image_123.jpg` become `http://localhost:8081/static/images/42/1/image_123.jpg`
 
-**Frontend config** ([frontend/src/lib/config.ts](frontend/src/lib/config.ts)) - add for reference (though we use `file_url` from API):
+**Frontend config** ([frontend/src/lib/config.ts](frontend/src/lib/config.ts)) - add for reference (though we use `url` from API):
 
 ```typescript
 export const STATIC_URL = import.meta.env.VITE_STATIC_URL || "http://localhost:8081/static";
@@ -226,6 +229,59 @@ Update to use `SvgProcessingStatus`:
 3. Success -> `COMPLETED` (+ Mercure)
 4. Failure -> `ERROR` (+ Mercure)
 
+### 4a. File Path Structure
+
+Update file storage paths to use organized directory structure:
+
+**Path format:**
+
+```
+<storage_path>/<order_id>/<line_item_id>/[coloring|svg]/v<version>/image_<position>.<suffix>
+```
+
+**Examples:**
+
+```
+/data/images/92/121/image_1.jpg           # Source image
+/data/images/92/121/coloring/v1/image_1.png   # Coloring version 1
+/data/images/92/121/coloring/v2/image_1.png   # Coloring version 2
+/data/images/92/121/svg/v1/image_1.svg        # SVG version 1
+```
+
+**Path generation helpers** (update in tasks):
+
+```python
+def _get_coloring_path(order_id: int, line_item_id: int, position: int, version: int) -> Path:
+    """Generate storage path for a coloring version."""
+    base = Path(settings.storage_path)
+    return base / str(order_id) / str(line_item_id) / "coloring" / f"v{version}" / f"image_{position}.png"
+
+def _get_svg_path(order_id: int, line_item_id: int, position: int, version: int) -> Path:
+    """Generate storage path for an SVG version."""
+    base = Path(settings.storage_path)
+    return base / str(order_id) / str(line_item_id) / "svg" / f"v{version}" / f"image_{position}.svg"
+```
+
+**Directory creation and file I/O** - use async file operations consistently:
+
+```python
+import anyio
+
+# Create directory (async)
+await anyio.Path(output_path.parent).mkdir(parents=True, exist_ok=True)
+
+# Write file (async)
+await anyio.Path(output_path).write_bytes(result_data)
+```
+
+Note: Use `anyio.Path` for async file I/O to avoid blocking the event loop. The vectorizer service already uses this pattern.
+
+**Files affected:**
+
+- [backend/app/tasks/process/generate_coloring.py](backend/app/tasks/process/generate_coloring.py) - update `_get_coloring_path()`
+- [backend/app/tasks/process/vectorize_image.py](backend/app/tasks/process/vectorize_image.py) - update `_get_svg_path()`
+- [backend/app/tasks/image_download.py](backend/app/tasks/image_download.py) - update source image path if needed
+
 ### 5. API Updates ([backend/app/api/v1/orders.py](backend/app/api/v1/orders.py))
 
 Update all references from `ImageProcessingStatus` to the appropriate enum:
@@ -243,11 +299,11 @@ Update all references from `ImageProcessingStatus` to the appropriate enum:
 
 |-----------------|---------|-------------|
 
-| `GET /api/v1/images/{image_id}` | Serve downloaded image | `file_url` in API response → nginx |
+| `GET /api/v1/images/{image_id}` | Serve downloaded image | `url` in API response → nginx |
 
-| `GET /api/v1/coloring-versions/{version_id}/file` | Serve coloring PNG | `file_url` in API response → nginx |
+| `GET /api/v1/coloring-versions/{version_id}/file` | Serve coloring PNG | `url` in API response → nginx |
 
-| `GET /api/v1/svg-versions/{version_id}/file` | Serve SVG file | `file_url` in API response → nginx |
+| `GET /api/v1/svg-versions/{version_id}/file` | Serve SVG file | `url` in API response → nginx |
 
 ### Endpoints to KEEP (but restructure responses):
 
@@ -255,7 +311,7 @@ Update all references from `ImageProcessingStatus` to the appropriate enum:
 
 |----------|---------|
 
-| `GET /api/v1/orders/{order_number}` | Response: `images[].versions.{coloring,svg}`, `file_url` |
+| `GET /api/v1/orders/{order_number}` | Response: `images[].versions.{coloring,svg}`, `url` |
 
 | `POST /api/v1/orders/{order_number}/generate-coloring` | No change to endpoint, response uses new schema |
 
@@ -292,7 +348,7 @@ Update all references from `ImageProcessingStatus` to the appropriate enum:
 ### Functions to REMOVE:
 
 ```typescript
-// Remove - images served by nginx via file_url
+// Remove - images served by nginx via url field
 export function getImageUrl(imageId: number): string;
 export function getColoringVersionUrl(versionId: number): string;
 export function getSvgVersionUrl(versionId: number): string;
@@ -327,14 +383,14 @@ interface SvgVersion {
 
 // NEW
 interface OrderImage {
-  file_url: string | null;  // Direct URL to nginx
+  url: string | null;  // Direct URL to nginx
   versions: {
     coloring: ColoringVersion[];
     svg: SvgVersion[];
   };
 }
 interface ColoringVersion {
-  file_url: string | null;  // Direct URL to nginx
+  url: string | null;  // Direct URL to nginx
   options: {
     megapixels: number;
     steps: number;
@@ -342,7 +398,7 @@ interface ColoringVersion {
   // No svg_versions - they're in versions.svg now
 }
 interface SvgVersion {
-  file_url: string | null;  // Direct URL to nginx
+  url: string | null;  // Direct URL to nginx
   options: {
     shape_stacking: string;
     group_by: string;
@@ -362,10 +418,10 @@ interface SvgVersion {
 <img src={getColoringVersionUrl(cv.id)} />
 <img src={getSvgVersionUrl(sv.id)} />
 
-// NEW - use file_url directly from API response
-<img src={image.file_url} />
-<img src={cv.file_url} />
-<img src={sv.file_url} />
+// NEW - use url directly from API response
+<img src={image.url} />
+<img src={cv.url} />
+<img src={sv.url} />
 ```
 
 ### Data Access Changes:
@@ -404,17 +460,18 @@ async def get_image(order_number: str, image_id: int, session: AsyncSession = De
 {
   "id": 123,
   "position": 1,
-  "original_url": "https://cdn.shopify.com/...",
-  "file_url": "http://localhost:8081/static/images/42/1/image_123.jpg",
+  "url": "http://localhost:8081/static/images/42/121/image_1.jpg",
   "downloaded_at": "2026-01-16T14:30:00+01:00",
-  "selected_coloring_id": 456,
-  "selected_svg_id": 789,
+  "selected_version_ids": {
+    "coloring": 456,
+    "svg": 789
+  },
   "versions": {
     "coloring": [
       {
         "id": 456,
         "version": 1,
-        "file_url": "http://localhost:8081/static/images/42/1/image_123_coloring_v1.png",
+        "url": "http://localhost:8081/static/images/42/121/coloring/v1/image_1.png",
         "status": "completed",
         "options": {
           "megapixels": 1.0,
@@ -425,7 +482,7 @@ async def get_image(order_number: str, image_id: int, session: AsyncSession = De
       {
         "id": 457,
         "version": 2,
-        "file_url": null,
+        "url": null,
         "status": "runpod_processing",
         "options": {
           "megapixels": 2.0,
@@ -438,7 +495,7 @@ async def get_image(order_number: str, image_id: int, session: AsyncSession = De
       {
         "id": 789,
         "version": 1,
-        "file_url": "http://localhost:8081/static/images/42/1/image_123_svg_v1.svg",
+        "url": "http://localhost:8081/static/images/42/121/svg/v1/image_1.svg",
         "status": "completed",
         "coloring_version_id": 456,
         "options": {
@@ -454,10 +511,12 @@ async def get_image(order_number: str, image_id: int, session: AsyncSession = De
 
 **Key changes from current API:**
 
-- `local_path` → `file_url` (full URL served by nginx)
+- Remove `original_url` from ImageResponse
+- `local_path` / `file_path` → `url` (full URL served by nginx)
 - `coloring_versions[].svg_versions` → `versions.svg` (flat structure, linked via `coloring_version_id`)
 - `megapixels`, `steps` → `options.megapixels`, `options.steps`
 - `shape_stacking`, `group_by` → `options.shape_stacking`, `options.group_by`
+- `selected_coloring_id`, `selected_svg_id` → `selected_version_ids: {coloring, svg}`
 
 **Pydantic schemas:**
 
@@ -473,7 +532,7 @@ class SvgOptionsResponse(BaseModel):
 class ColoringVersionResponse(BaseModel):
     id: int
     version: int
-    file_url: str | None
+    url: str | None
     status: ColoringProcessingStatus
     options: ColoringOptionsResponse
     created_at: datetime
@@ -481,7 +540,7 @@ class ColoringVersionResponse(BaseModel):
 class SvgVersionResponse(BaseModel):
     id: int
     version: int
-    file_url: str | None
+    url: str | None
     status: SvgProcessingStatus
     coloring_version_id: int
     options: SvgOptionsResponse
@@ -491,14 +550,16 @@ class VersionsResponse(BaseModel):
     coloring: list[ColoringVersionResponse]
     svg: list[SvgVersionResponse]
 
+class SelectedVersionIdsResponse(BaseModel):
+    coloring: int | None
+    svg: int | None
+
 class ImageResponse(BaseModel):
     id: int
     position: int
-    original_url: str
-    file_url: str | None  # Downloaded image URL
+    url: str | None  # Downloaded image URL (served by nginx)
     downloaded_at: datetime | None
-    selected_coloring_id: int | None
-    selected_svg_id: int | None
+    selected_version_ids: SelectedVersionIdsResponse
     versions: VersionsResponse
 ```
 
@@ -689,7 +750,7 @@ interface SvgOptions {
 interface ColoringVersion {
   id: number;
   version: number;
-  file_url: string | null;
+  url: string | null;
   status: string;
   options: ColoringOptions;
   created_at: string;
@@ -698,7 +759,7 @@ interface ColoringVersion {
 interface SvgVersion {
   id: number;
   version: number;
-  file_url: string | null;
+  url: string | null;
   status: string;
   coloring_version_id: number;
   options: SvgOptions;
@@ -710,15 +771,18 @@ interface Versions {
   svg: SvgVersion[];
 }
 
+interface SelectedVersionIds {
+  coloring: number | null;
+  svg: number | null;
+}
+
 // Image interface
 interface Image {
   id: number;
   position: number;
-  original_url: string;
-  file_url: string | null;
+  url: string | null;  // Downloaded image URL (served by nginx)
   downloaded_at: string | null;
-  selected_coloring_id: number | null;
-  selected_svg_id: number | null;
+  selected_version_ids: SelectedVersionIds;
   versions: Versions;
 }
 ```
@@ -761,9 +825,12 @@ Update to use new API structure:
 
 - Change `image.coloring_versions` → `image.versions.coloring`
 - Change `coloring.svg_versions` → `image.versions.svg` (filter by `coloring_version_id`)
-- Change `file_path` → `file_url` (can use directly in `<img src>`)
+- Remove usage of `image.original_url`
+- Change `image.local_path` / `cv.file_path` / `sv.file_path` → `.url` (use directly in `<img src>`)
 - Change `cv.megapixels` → `cv.options.megapixels`
 - Change `sv.shape_stacking` → `sv.options.shape_stacking`
+- Change `image.selected_coloring_id` → `image.selected_version_ids.coloring`
+- Change `image.selected_svg_id` → `image.selected_version_ids.svg`
 - Use `getColoringStatusDisplay()` for coloring versions
 - Use `getSvgStatusDisplay()` for SVG versions
 

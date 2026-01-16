@@ -4,18 +4,6 @@ import { API_BASE, SHOPIFY_STORE_HANDLE, SHOPIFY_ADMIN_BASE_URL } from "./config
 // URL Helpers
 // =============================================================================
 
-export function getImageUrl(imageId: number): string {
-  return `${API_BASE}/api/v1/images/${imageId}`;
-}
-
-export function getColoringVersionUrl(versionId: number): string {
-  return `${API_BASE}/api/v1/coloring-versions/${versionId}/file`;
-}
-
-export function getSvgVersionUrl(versionId: number): string {
-  return `${API_BASE}/api/v1/svg-versions/${versionId}/file`;
-}
-
 export function getShopifyOrderUrl(shopifyId: number): string {
   return `${SHOPIFY_ADMIN_BASE_URL}/${SHOPIFY_STORE_HANDLE}/orders/${shopifyId}`;
 }
@@ -38,44 +26,80 @@ export interface Order {
 
 export type OrderStatus = "pending" | "downloading" | "processing" | "ready_for_review" | "error";
 
-export type ProcessingStatus = "pending" | "queued" | "processing" | "completed" | "error";
+// Coloring processing statuses
+export type ColoringProcessingStatus =
+  | "pending"
+  | "queued"
+  | "processing"
+  | "runpod_submitting"
+  | "runpod_submitted"
+  | "runpod_queued"
+  | "runpod_processing"
+  | "completed"
+  | "error";
+
+// SVG processing statuses
+export type SvgProcessingStatus =
+  | "pending"
+  | "queued"
+  | "processing"
+  | "vectorizer_processing"
+  | "completed"
+  | "error";
 
 export interface OrderListResponse {
   orders: Order[];
   total: number;
 }
 
-export interface SvgVersion {
-  id: number;
-  version: number;
-  file_path: string | null;
-  status: ProcessingStatus;
-  coloring_version_id: number;
-  shape_stacking: string;
-  group_by: string;
-  created_at: string;
+// Options interfaces
+export interface ColoringOptions {
+  megapixels: number;
+  steps: number;
 }
 
+export interface SvgOptions {
+  shape_stacking: string;
+  group_by: string;
+}
+
+// Version interfaces
 export interface ColoringVersion {
   id: number;
   version: number;
-  file_path: string | null;
-  status: ProcessingStatus;
-  megapixels: number;
-  steps: number;
+  url: string | null;
+  status: ColoringProcessingStatus;
+  options: ColoringOptions;
   created_at: string;
-  svg_versions: SvgVersion[];
+}
+
+export interface SvgVersion {
+  id: number;
+  version: number;
+  url: string | null;
+  status: SvgProcessingStatus;
+  coloring_version_id: number;
+  options: SvgOptions;
+  created_at: string;
+}
+
+export interface Versions {
+  coloring: ColoringVersion[];
+  svg: SvgVersion[];
+}
+
+export interface SelectedVersionIds {
+  coloring: number | null;
+  svg: number | null;
 }
 
 export interface OrderImage {
   id: number;
   position: number;
-  original_url: string;
-  local_path: string | null;
+  url: string | null;
   downloaded_at: string | null;
-  selected_coloring_id: number | null;
-  selected_svg_id: number | null;
-  coloring_versions: ColoringVersion[];
+  selected_version_ids: SelectedVersionIds;
+  versions: Versions;
 }
 
 export interface LineItem {
@@ -136,6 +160,18 @@ export async function fetchOrder(orderNumber: string): Promise<OrderDetail> {
   const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}`);
   if (!response.ok) {
     throw new Error("Failed to fetch order");
+  }
+  return response.json();
+}
+
+/**
+ * Fetch a single image with all coloring/SVG versions
+ * Used for efficient updates when receiving image_status Mercure events
+ */
+export async function fetchImage(orderNumber: string, imageId: number): Promise<OrderImage> {
+  const response = await fetch(`${API_BASE}/api/v1/orders/${orderNumber}/images/${imageId}`);
+  if (!response.ok) {
+    throw new Error("Failed to fetch image");
   }
   return response.json();
 }

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     # Storage
     storage_path: str = "/data/images"
+    static_url: str = "http://localhost:8081/static"  # URL for browser to access static files
 
     # RunPod
     runpod_api_key: str = ""

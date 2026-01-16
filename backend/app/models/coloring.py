@@ -7,7 +7,7 @@ from sqlalchemy import Column, DateTime
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlmodel import Field, Relationship, SQLModel
 
-from app.models.enums import ImageProcessingStatus
+from app.models.enums import ColoringProcessingStatus, SvgProcessingStatus
 
 if TYPE_CHECKING:
     from app.models.order import Image
@@ -18,10 +18,17 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-# PostgreSQL enum type that uses lowercase values
-_processing_status_enum = PgEnum(
-    ImageProcessingStatus,
-    name="imageprocessingstatus",
+# PostgreSQL enum types for each status
+_coloring_status_enum = PgEnum(
+    ColoringProcessingStatus,
+    name="coloringprocessingstatus",
+    create_type=False,
+    values_callable=lambda e: [member.value for member in e],
+)
+
+_svg_status_enum = PgEnum(
+    SvgProcessingStatus,
+    name="svgprocessingstatus",
     create_type=False,
     values_callable=lambda e: [member.value for member in e],
 )
@@ -36,12 +43,12 @@ class ColoringVersion(SQLModel, table=True):
     image_id: int = Field(foreign_key="images.id", index=True)
     version: int  # Auto-increment per image, starting at 1
     file_path: str | None = None
-    status: ImageProcessingStatus = Field(
-        default=ImageProcessingStatus.PENDING,
+    status: ColoringProcessingStatus = Field(
+        default=ColoringProcessingStatus.PENDING,
         sa_column=Column(
-            _processing_status_enum,
+            _coloring_status_enum,
             nullable=False,
-            default=ImageProcessingStatus.PENDING,
+            default=ColoringProcessingStatus.PENDING,
         ),
     )
 
@@ -71,12 +78,12 @@ class SvgVersion(SQLModel, table=True):
     coloring_version_id: int = Field(foreign_key="coloring_versions.id", index=True)
     version: int  # Auto-increment per image
     file_path: str | None = None
-    status: ImageProcessingStatus = Field(
-        default=ImageProcessingStatus.PENDING,
+    status: SvgProcessingStatus = Field(
+        default=SvgProcessingStatus.PENDING,
         sa_column=Column(
-            _processing_status_enum,
+            _svg_status_enum,
             nullable=False,
-            default=ImageProcessingStatus.PENDING,
+            default=SvgProcessingStatus.PENDING,
         ),
     )
 

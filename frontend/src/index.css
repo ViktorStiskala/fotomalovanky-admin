@@ -57,3 +57,10 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  /* Status badge with smooth transitions for color/content changes */
+  .status-badge {
+    @apply transition-all duration-300 ease-in-out;
+  }
+}

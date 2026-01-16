@@ -14,11 +14,18 @@ import type { MercureEvent } from "@/types";
  * 2. Frontend receives ping via SSE
  * 3. Frontend invalidates query cache
  * 4. TanStack Query refetches fresh data from API
+ *
+ * Note: `image_status` events are ignored here as they only affect detail views.
  */
 export function useOrderListEvents(): void {
   const handleMessage = useCallback((data: unknown) => {
     const event = data as MercureEvent;
     console.log("[Mercure] Order list event received:", event);
+
+    // image_status events don't affect the list view
+    if (event.type === "image_status") {
+      return;
+    }
 
     // Invalidate the orders list query to trigger a refetch
     queryClient.invalidateQueries({ queryKey: ["orders"] });

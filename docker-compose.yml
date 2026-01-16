@@ -52,6 +52,19 @@ services:
       timeout: 5s
       retries: 5
 
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - storage_data:/data:ro
+      - ./backend/.docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8081:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # =============================================================================
   # Backend Services
   # =============================================================================

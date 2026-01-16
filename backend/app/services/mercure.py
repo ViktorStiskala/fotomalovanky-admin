@@ -1,5 +1,8 @@
 """Mercure SSE publishing service."""
 
+import json
+from typing import Literal
+
 import httpx
 import jwt
 import structlog
@@ -109,4 +112,52 @@ async def publish_order_list_update() -> bool:
     return await _publish_to_mercure(
         topics="orders",
         data='{"type": "list_update"}',
+    )
+
+
+async def publish_image_status(
+    order_number: str,
+    image_id: int,
+    status_type: Literal["coloring", "svg"],
+    version_id: int,
+    status: str,
+) -> bool:
+    """
+    Publish a granular status update for a specific image.
+
+    This is used during processing to notify clients of status changes
+    without requiring a full order refetch. Clients should fetch only
+    the updated image data.
+
+    Args:
+        order_number: The Shopify order number (e.g., "1270" without the "#")
+        image_id: Database ID of the Image record
+        status_type: Either "coloring" or "svg"
+        version_id: Database ID of ColoringVersion or SvgVersion
+        status: The new status value
+
+    Returns:
+        True if published successfully, False otherwise
+    """
+    data = json.dumps(
+        {
+            "type": "image_status",
+            "order_number": order_number,
+            "image_id": image_id,
+            "status_type": status_type,
+            "version_id": version_id,
+            "status": status,
+        }
+    )
+
+    return await _publish_to_mercure(
+        topics=["orders", f"orders/{order_number}"],
+        data=data,
+        context={
+            "order_number": order_number,
+            "image_id": image_id,
+            "status_type": status_type,
+            "version_id": version_id,
+            "status": status,
+        },
     )

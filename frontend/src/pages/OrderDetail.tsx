@@ -5,10 +5,7 @@ import { Icon } from "@iconify/react";
 import {
   fetchOrder,
   syncOrder,
-  getImageUrl,
   getShopifyOrderUrl,
-  getColoringVersionUrl,
-  getSvgVersionUrl,
   generateOrderColoring,
   generateOrderSvg,
   generateImageColoring,
@@ -21,7 +18,12 @@ import {
 } from "@/lib/api";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { queryClient } from "@/lib/queryClient";
-import { ORDER_STATUS_DISPLAY, getPaymentStatusDisplay, getProcessingStatusDisplay } from "@/types";
+import {
+  ORDER_STATUS_DISPLAY,
+  getPaymentStatusDisplay,
+  getColoringStatusDisplay,
+  getSvgStatusDisplay,
+} from "@/types";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
@@ -64,18 +66,25 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
   const [svgGroupBy, setSvgGroupBy] = useState("color");
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
 
-  // Derive SVG versions from coloring versions (now included in order response)
-  const svgVersions = image.coloring_versions
-    .flatMap((cv) => cv.svg_versions || [])
-    .sort((a, b) => b.version - a.version);
+  // Access versions from new structure
+  const coloringVersions = image.versions.coloring;
+  const svgVersions = image.versions.svg;
 
   // Find selected versions
-  const selectedColoring = image.coloring_versions.find(
-    (cv) => cv.id === image.selected_coloring_id
+  const selectedColoring = coloringVersions.find(
+    (cv) => cv.id === image.selected_version_ids.coloring
   );
-  const hasCompletedColoring = image.coloring_versions.some((cv) => cv.status === "completed");
-  const isColoringProcessing = image.coloring_versions.some(
-    (cv) => cv.status === "queued" || cv.status === "processing"
+  const hasCompletedColoring = coloringVersions.some((cv) => cv.status === "completed");
+
+  // Check if any coloring is in a processing state (includes runpod states)
+  const isColoringProcessing = coloringVersions.some(
+    (cv) =>
+      cv.status === "queued" ||
+      cv.status === "processing" ||
+      cv.status === "runpod_submitting" ||
+      cv.status === "runpod_submitted" ||
+      cv.status === "runpod_queued" ||
+      cv.status === "runpod_processing"
   );
 
   // Generate coloring mutation
@@ -101,6 +110,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
       setShowSvgSettings(false);
+      setActiveTab("svg");
     },
   });
 
@@ -136,18 +146,20 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
     },
   });
 
+  // Check if any SVG is in a processing state
   const isSvgProcessing = svgVersions.some(
-    (sv) => sv.status === "queued" || sv.status === "processing"
+    (sv) =>
+      sv.status === "queued" || sv.status === "processing" || sv.status === "vectorizer_processing"
   );
 
   return (
     <div className="space-y-4" data-image-id={image.id}>
       {/* Original Image */}
       <div className="h-[32rem] bg-muted rounded overflow-hidden relative flex items-center justify-center group">
-        {image.local_path ? (
+        {image.url ? (
           <>
             <img
-              src={getImageUrl(image.id)}
+              src={image.url}
               alt={`Fotka ${image.position}`}
               className="max-w-full max-h-full object-contain"
               onError={(e) => {
@@ -162,7 +174,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
               className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity"
               onClick={() =>
                 setPreviewImage({
-                  src: getImageUrl(image.id),
+                  src: image.url!,
                   alt: `Fotka ${image.position}`,
                 })
               }
@@ -173,7 +185,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
         ) : null}
         <div
           className="placeholder absolute inset-0 items-center justify-center text-muted-foreground text-sm"
-          style={{ display: image.local_path ? "none" : "flex" }}
+          style={{ display: image.url ? "none" : "flex" }}
         >
           {image.downloaded_at ? "Staženo" : "Čeká na stažení"}
         </div>
@@ -194,9 +206,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
             <Button
               size="sm"
               onClick={() => generateColoringMutation.mutate()}
-              disabled={
-                !image.local_path || generateColoringMutation.isPending || isColoringProcessing
-              }
+              disabled={!image.url || generateColoringMutation.isPending || isColoringProcessing}
             >
               {generateColoringMutation.isPending || isColoringProcessing
                 ? "Generuji..."
@@ -293,7 +303,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
       </div>
 
       {/* Version Switcher */}
-      {(image.coloring_versions.length > 0 || svgVersions.length > 0) && (
+      {(coloringVersions.length > 0 || svgVersions.length > 0) && (
         <div className="border rounded-lg p-4">
           {/* Tab Header */}
           <div className="flex gap-2 mb-4">
@@ -305,7 +315,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
               }`}
               onClick={() => setActiveTab("coloring")}
             >
-              Omalovánka ({image.coloring_versions.length})
+              Omalovánka ({coloringVersions.length})
             </button>
             <button
               className={`px-3 py-1 rounded text-sm font-medium ${
@@ -324,10 +334,10 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
             <div className="space-y-3">
               {/* Preview area - always same height */}
               <div className="h-[32rem] bg-muted rounded overflow-hidden relative flex items-center justify-center group">
-                {selectedColoring?.file_path ? (
+                {selectedColoring?.url ? (
                   <>
                     <img
-                      src={getColoringVersionUrl(selectedColoring.id)}
+                      src={selectedColoring.url}
                       alt={`Omalovánka v${selectedColoring.version}`}
                       className="max-w-full max-h-full object-contain"
                     />
@@ -335,7 +345,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                       className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity"
                       onClick={() =>
                         setPreviewImage({
-                          src: getColoringVersionUrl(selectedColoring.id),
+                          src: selectedColoring.url!,
                           alt: `Omalovánka v${selectedColoring.version}`,
                         })
                       }
@@ -345,16 +355,16 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                   </>
                 ) : (
                   <p className="text-sm text-muted-foreground">
-                    {image.coloring_versions.length === 0 ? "Žádné verze" : "Generování..."}
+                    {coloringVersions.length === 0 ? "Žádné verze" : "Generování..."}
                   </p>
                 )}
               </div>
 
               {/* Version list - always show container for consistent height */}
               <div className="flex flex-wrap gap-2 items-stretch min-h-[5rem]">
-                {image.coloring_versions.map((cv) => {
-                  const status = getProcessingStatusDisplay(cv.status);
-                  const isSelected = cv.id === image.selected_coloring_id;
+                {coloringVersions.map((cv) => {
+                  const status = getColoringStatusDisplay(cv.status);
+                  const isSelected = cv.id === image.selected_version_ids.coloring;
                   const isError = cv.status === "error";
 
                   return (
@@ -374,11 +384,11 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                     >
                       <div className="font-medium">v{cv.version}</div>
                       <div className="text-xs text-muted-foreground">
-                        {cv.megapixels}MP / {cv.steps}st
+                        {cv.options.megapixels}MP / {cv.options.steps}st
                       </div>
                       <div className="flex-1 flex items-center justify-center">
                         <span
-                          className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${status.color}`}
+                          className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 transition-all duration-300 ${status.color}`}
                         >
                           {status.label}
                           {isError && (
@@ -405,40 +415,48 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
             <div className="space-y-3">
               {/* Preview area - always same height */}
               <div className="h-[32rem] bg-muted rounded overflow-hidden relative flex items-center justify-center group">
-                {image.selected_svg_id ? (
-                  <>
-                    <img
-                      src={getSvgVersionUrl(image.selected_svg_id)}
-                      alt="SVG"
-                      className="max-w-full max-h-full object-contain"
-                    />
-                    <button
-                      className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={() =>
-                        setPreviewImage({
-                          src: getSvgVersionUrl(image.selected_svg_id!),
-                          alt: "SVG",
-                        })
-                      }
-                    >
-                      <Icon icon="mdi:fullscreen" className="w-5 h-5" />
-                    </button>
-                  </>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    {svgVersions.length === 0 ? "Žádné SVG verze" : "Generování..."}
-                  </p>
-                )}
+                {(() => {
+                  const selectedSvg = svgVersions.find(
+                    (sv) => sv.id === image.selected_version_ids.svg
+                  );
+                  if (selectedSvg?.url) {
+                    return (
+                      <>
+                        <img
+                          src={selectedSvg.url}
+                          alt="SVG"
+                          className="max-w-full max-h-full object-contain"
+                        />
+                        <button
+                          className="absolute top-2 right-2 p-1.5 bg-black/50 hover:bg-black/70 rounded text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={() =>
+                            setPreviewImage({
+                              src: selectedSvg.url!,
+                              alt: "SVG",
+                            })
+                          }
+                        >
+                          <Icon icon="mdi:fullscreen" className="w-5 h-5" />
+                        </button>
+                      </>
+                    );
+                  }
+                  return (
+                    <p className="text-sm text-muted-foreground">
+                      {svgVersions.length === 0 ? "Žádné SVG verze" : "Generování..."}
+                    </p>
+                  );
+                })()}
               </div>
 
               {/* SVG Version list - always show container for consistent height */}
               <div className="flex flex-wrap gap-2 items-stretch min-h-[5rem]">
                 {svgVersions.map((sv) => {
-                  const status = getProcessingStatusDisplay(sv.status);
-                  const isSelected = sv.id === image.selected_svg_id;
+                  const status = getSvgStatusDisplay(sv.status);
+                  const isSelected = sv.id === image.selected_version_ids.svg;
                   const isError = sv.status === "error";
                   // Find the source coloring version number
-                  const sourceColoring = image.coloring_versions.find(
+                  const sourceColoring = coloringVersions.find(
                     (cv) => cv.id === sv.coloring_version_id
                   );
                   const sourceVersion = sourceColoring?.version ?? "?";
@@ -462,11 +480,12 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                         v{sv.version} (v{sourceVersion})
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {getShapeStackingLabel(sv.shape_stacking)} / {getGroupByLabel(sv.group_by)}
+                        {getShapeStackingLabel(sv.options.shape_stacking)} /{" "}
+                        {getGroupByLabel(sv.options.group_by)}
                       </div>
                       <div className="flex-1 flex items-center justify-center">
                         <span
-                          className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 ${status.color}`}
+                          className={`text-xs px-1.5 py-0.5 rounded inline-flex items-center gap-1 transition-all duration-300 ${status.color}`}
                         >
                           {status.label}
                           {isError && (
@@ -592,27 +611,39 @@ export default function OrderDetail() {
 
   // Check if any images have completed coloring versions
   const hasAnyCompletedColoring = order.line_items.some((li) =>
-    li.images.some((img) => img.coloring_versions.some((cv) => cv.status === "completed"))
+    li.images.some((img) => img.versions.coloring.some((cv) => cv.status === "completed"))
   );
 
   // Check if coloring generation is in progress
   const isColoringGenerating = order.line_items.some((li) =>
     li.images.some((img) =>
-      img.coloring_versions.some((cv) => cv.status === "queued" || cv.status === "processing")
+      img.versions.coloring.some(
+        (cv) =>
+          cv.status === "queued" ||
+          cv.status === "processing" ||
+          cv.status === "runpod_submitting" ||
+          cv.status === "runpod_submitted" ||
+          cv.status === "runpod_queued" ||
+          cv.status === "runpod_processing"
+      )
     )
   );
 
   // Check if ALL downloaded images either have completed coloring OR are processing
   // If so, disable the "Vygenerovat jednotlivé omalovánky" button
-  const downloadedImages = order.line_items.flatMap((li) =>
-    li.images.filter((img) => img.local_path)
-  );
+  const downloadedImages = order.line_items.flatMap((li) => li.images.filter((img) => img.url));
   const allImagesHaveColoringOrProcessing =
     downloadedImages.length > 0 &&
     downloadedImages.every((img) => {
-      const hasCompleted = img.coloring_versions.some((cv) => cv.status === "completed");
-      const isProcessing = img.coloring_versions.some(
-        (cv) => cv.status === "queued" || cv.status === "processing"
+      const hasCompleted = img.versions.coloring.some((cv) => cv.status === "completed");
+      const isProcessing = img.versions.coloring.some(
+        (cv) =>
+          cv.status === "queued" ||
+          cv.status === "processing" ||
+          cv.status === "runpod_submitting" ||
+          cv.status === "runpod_submitted" ||
+          cv.status === "runpod_queued" ||
+          cv.status === "runpod_processing"
       );
       return hasCompleted || isProcessing;
     });

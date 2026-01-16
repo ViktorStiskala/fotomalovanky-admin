@@ -1,13 +1,11 @@
 """Order API endpoints."""
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 from dateutil.parser import parse as parse_datetime
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,12 +13,12 @@ from sqlmodel import select
 
 from app.db import get_session
 from app.models.coloring import ColoringVersion, SvgVersion
-from app.models.enums import ImageProcessingStatus, OrderStatus
+from app.models.enums import ColoringProcessingStatus, OrderStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
 from app.services.mercure import publish_order_list_update
 from app.services.shopify import list_recent_orders
 from app.tasks import generate_coloring, ingest_order, vectorize_image
-from app.utils import build_customer_name, normalize_order_number, to_api_timezone
+from app.utils import build_customer_name, file_path_to_url, normalize_order_number, to_api_timezone
 
 if TYPE_CHECKING:
     from app.services.shopify_client.graphql_client.list_recent_orders import (
@@ -30,6 +28,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+
+
+# =============================================================================
+# Response Schemas
+# =============================================================================
 
 
 class OrderResponse(BaseModel):
@@ -53,24 +56,18 @@ class OrderResponse(BaseModel):
         return localized_dt.isoformat()
 
 
-class SvgVersionResponse(BaseModel):
-    """SVG version response schema."""
+class ColoringOptionsResponse(BaseModel):
+    """Coloring generation options."""
 
-    id: int
-    version: int
-    file_path: str | None
-    status: ImageProcessingStatus
-    coloring_version_id: int
+    megapixels: float
+    steps: int
+
+
+class SvgOptionsResponse(BaseModel):
+    """SVG generation options."""
+
     shape_stacking: str
     group_by: str
-    created_at: datetime
-
-    @field_serializer("created_at")
-    def serialize_created_at(self, dt: datetime) -> str:
-        """Serialize datetime to API timezone."""
-        localized_dt = to_api_timezone(dt)
-        assert localized_dt is not None
-        return localized_dt.isoformat()
 
 
 class ColoringVersionResponse(BaseModel):
@@ -78,12 +75,10 @@ class ColoringVersionResponse(BaseModel):
 
     id: int
     version: int
-    file_path: str | None
-    status: ImageProcessingStatus
-    megapixels: float
-    steps: int
+    url: str | None
+    status: ColoringProcessingStatus
+    options: ColoringOptionsResponse
     created_at: datetime
-    svg_versions: list[SvgVersionResponse] = []
 
     @field_serializer("created_at")
     def serialize_created_at(self, dt: datetime) -> str:
@@ -93,17 +88,48 @@ class ColoringVersionResponse(BaseModel):
         return localized_dt.isoformat()
 
 
+class SvgVersionResponse(BaseModel):
+    """SVG version response schema."""
+
+    id: int
+    version: int
+    url: str | None
+    status: SvgProcessingStatus
+    coloring_version_id: int
+    options: SvgOptionsResponse
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, dt: datetime) -> str:
+        """Serialize datetime to API timezone."""
+        localized_dt = to_api_timezone(dt)
+        assert localized_dt is not None
+        return localized_dt.isoformat()
+
+
+class VersionsResponse(BaseModel):
+    """Container for coloring and SVG versions."""
+
+    coloring: list[ColoringVersionResponse]
+    svg: list[SvgVersionResponse]
+
+
+class SelectedVersionIdsResponse(BaseModel):
+    """Selected version IDs."""
+
+    coloring: int | None
+    svg: int | None
+
+
 class ImageResponse(BaseModel):
     """Image response schema."""
 
     id: int
     position: int
-    original_url: str
-    local_path: str | None
+    url: str | None
     downloaded_at: datetime | None
-    selected_coloring_id: int | None
-    selected_svg_id: int | None
-    coloring_versions: list[ColoringVersionResponse]
+    selected_version_ids: SelectedVersionIdsResponse
+    versions: VersionsResponse
 
     @field_serializer("downloaded_at")
     def serialize_downloaded_at(self, dt: datetime | None) -> str | None:
@@ -150,6 +176,72 @@ class OrderListResponse(BaseModel):
 
     orders: list[OrderResponse]
     total: int
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+
+def _build_coloring_version_response(cv: ColoringVersion) -> ColoringVersionResponse:
+    """Build ColoringVersionResponse from model."""
+    return ColoringVersionResponse(
+        id=cv.id,  # type: ignore[arg-type]
+        version=cv.version,
+        url=file_path_to_url(cv.file_path),
+        status=cv.status,
+        options=ColoringOptionsResponse(
+            megapixels=cv.megapixels,
+            steps=cv.steps,
+        ),
+        created_at=cv.created_at,
+    )
+
+
+def _build_svg_version_response(sv: SvgVersion) -> SvgVersionResponse:
+    """Build SvgVersionResponse from model."""
+    return SvgVersionResponse(
+        id=sv.id,  # type: ignore[arg-type]
+        version=sv.version,
+        url=file_path_to_url(sv.file_path),
+        status=sv.status,
+        coloring_version_id=sv.coloring_version_id,
+        options=SvgOptionsResponse(
+            shape_stacking=sv.shape_stacking,
+            group_by=sv.group_by,
+        ),
+        created_at=sv.created_at,
+    )
+
+
+def _build_image_response(img: Image) -> ImageResponse:
+    """Build ImageResponse from model with all versions."""
+    # Collect all SVG versions from all coloring versions
+    all_svg_versions: list[SvgVersion] = []
+    for cv in img.coloring_versions:
+        all_svg_versions.extend(cv.svg_versions)
+
+    return ImageResponse(
+        id=img.id,  # type: ignore[arg-type]
+        position=img.position,
+        url=file_path_to_url(img.local_path),
+        downloaded_at=img.downloaded_at,
+        selected_version_ids=SelectedVersionIdsResponse(
+            coloring=img.selected_coloring_id,
+            svg=img.selected_svg_id,
+        ),
+        versions=VersionsResponse(
+            coloring=[
+                _build_coloring_version_response(cv) for cv in sorted(img.coloring_versions, key=lambda x: x.version)
+            ],
+            svg=[_build_svg_version_response(sv) for sv in sorted(all_svg_versions, key=lambda x: x.version)],
+        ),
+    )
+
+
+# =============================================================================
+# Order Endpoints
+# =============================================================================
 
 
 @router.get("/orders", response_model=OrderListResponse)
@@ -236,47 +328,53 @@ async def get_order(
                 quantity=li.quantity,
                 dedication=li.dedication,
                 layout=li.layout,
-                images=[
-                    ImageResponse(
-                        id=img.id,  # type: ignore[arg-type]
-                        position=img.position,
-                        original_url=img.original_url,
-                        local_path=img.local_path,
-                        downloaded_at=img.downloaded_at,
-                        selected_coloring_id=img.selected_coloring_id,
-                        selected_svg_id=img.selected_svg_id,
-                        coloring_versions=[
-                            ColoringVersionResponse(
-                                id=cv.id,  # type: ignore[arg-type]
-                                version=cv.version,
-                                file_path=cv.file_path,
-                                status=cv.status,
-                                megapixels=cv.megapixels,
-                                steps=cv.steps,
-                                created_at=cv.created_at,
-                                svg_versions=[
-                                    SvgVersionResponse(
-                                        id=sv.id,  # type: ignore[arg-type]
-                                        version=sv.version,
-                                        file_path=sv.file_path,
-                                        status=sv.status,
-                                        coloring_version_id=sv.coloring_version_id,
-                                        shape_stacking=sv.shape_stacking,
-                                        group_by=sv.group_by,
-                                        created_at=sv.created_at,
-                                    )
-                                    for sv in sorted(cv.svg_versions, key=lambda x: x.version)
-                                ],
-                            )
-                            for cv in sorted(img.coloring_versions, key=lambda x: x.version)
-                        ],
-                    )
-                    for img in sorted(li.images, key=lambda x: x.position)
-                ],
+                images=[_build_image_response(img) for img in sorted(li.images, key=lambda x: x.position)],
             )
             for li in order.line_items
         ],
     )
+
+
+@router.get("/orders/{order_number}/images/{image_id}", response_model=ImageResponse)
+async def get_order_image(
+    order_number: str,
+    image_id: int,
+    session: AsyncSession = Depends(get_session),
+) -> ImageResponse:
+    """Get a single image with all coloring/SVG versions.
+
+    This endpoint is optimized for Mercure image_status events, allowing
+    the frontend to fetch only the updated image data instead of the full order.
+    """
+    normalized_number = normalize_order_number(order_number)
+
+    # Verify order exists
+    order_statement = select(Order).where(Order.shopify_order_number == normalized_number)
+    order_result = await session.execute(order_statement)
+    order = order_result.scalars().first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Get image with all versions
+    statement = (
+        select(Image)
+        .options(
+            selectinload(Image.coloring_versions).selectinload(ColoringVersion.svg_versions)  # type: ignore[arg-type]  # type: ignore[arg-type]
+        )
+        .where(Image.id == image_id)
+    )
+    result = await session.execute(statement)
+    image = result.scalars().first()
+
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    # Verify image belongs to the order
+    line_item = await session.get(LineItem, image.line_item_id)
+    if not line_item or line_item.order_id != order.id:
+        raise HTTPException(status_code=404, detail="Image not found in this order")
+
+    return _build_image_response(image)
 
 
 @router.post("/orders/{order_number}/sync")
@@ -317,7 +415,7 @@ class FetchFromShopifyResponse(BaseModel):
 
 def _update_order_from_shopify(
     order: Order,
-    shopify_order: ListRecentOrdersOrdersEdgesNode,
+    shopify_order: "ListRecentOrdersOrdersEdgesNode",
 ) -> None:
     """Update order with latest data from Shopify (payment status, shipping method, etc.)."""
     # Update payment status
@@ -473,37 +571,6 @@ async def fetch_orders_from_shopify(
     )
 
 
-@router.get("/images/{image_id}")
-async def get_image(
-    image_id: int,
-    session: AsyncSession = Depends(get_session),
-) -> FileResponse:
-    """Serve a downloaded image file."""
-    image = await session.get(Image, image_id)
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-
-    if not image.local_path:
-        raise HTTPException(status_code=404, detail="Image not downloaded yet")
-
-    file_path = Path(image.local_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Image file not found")
-
-    # Determine media type from extension
-    extension = file_path.suffix.lower()
-    media_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-    }
-    media_type = media_types.get(extension, "image/jpeg")
-
-    return FileResponse(file_path, media_type=media_type)
-
-
 # =============================================================================
 # Coloring Generation Endpoints
 # =============================================================================
@@ -587,12 +654,12 @@ async def generate_order_coloring(
             if not img.local_path:  # Skip images not yet downloaded
                 continue
             # Check if already has a completed coloring version
-            has_completed = any(cv.status == ImageProcessingStatus.COMPLETED for cv in img.coloring_versions)
+            has_completed = any(cv.status == ColoringProcessingStatus.COMPLETED for cv in img.coloring_versions)
             if has_completed:
                 continue  # Skip - already has coloring
             # Check if any coloring version is currently queued or processing
             is_processing = any(
-                cv.status in (ImageProcessingStatus.QUEUED, ImageProcessingStatus.PROCESSING)
+                cv.status in (ColoringProcessingStatus.QUEUED, ColoringProcessingStatus.PROCESSING)
                 for cv in img.coloring_versions
             )
             if is_processing:
@@ -614,7 +681,7 @@ async def generate_order_coloring(
         coloring_version = ColoringVersion(
             image_id=image.id,
             version=next_version,
-            status=ImageProcessingStatus.QUEUED,
+            status=ColoringProcessingStatus.QUEUED,
             megapixels=req.megapixels,
             steps=req.steps,
         )
@@ -658,7 +725,7 @@ async def generate_image_coloring(
     coloring_version = ColoringVersion(
         image_id=image_id,
         version=next_version,
-        status=ImageProcessingStatus.QUEUED,
+        status=ColoringProcessingStatus.QUEUED,
         megapixels=req.megapixels,
         steps=req.steps,
     )
@@ -670,15 +737,7 @@ async def generate_image_coloring(
 
     await session.commit()
 
-    return ColoringVersionResponse(
-        id=coloring_version.id,
-        version=coloring_version.version,
-        file_path=coloring_version.file_path,
-        status=coloring_version.status,
-        megapixels=coloring_version.megapixels,
-        steps=coloring_version.steps,
-        created_at=coloring_version.created_at,
-    )
+    return _build_coloring_version_response(coloring_version)
 
 
 # =============================================================================
@@ -708,11 +767,11 @@ def _find_coloring_for_svg(image: Image) -> ColoringVersion | None:
     # Try selected coloring first
     if image.selected_coloring_id:
         for cv in image.coloring_versions:
-            if cv.id == image.selected_coloring_id and cv.status == ImageProcessingStatus.COMPLETED:
+            if cv.id == image.selected_coloring_id and cv.status == ColoringProcessingStatus.COMPLETED:
                 return cv
 
     # Fall back to latest completed coloring
-    completed = [cv for cv in image.coloring_versions if cv.status == ImageProcessingStatus.COMPLETED]
+    completed = [cv for cv in image.coloring_versions if cv.status == ColoringProcessingStatus.COMPLETED]
     if completed:
         return max(completed, key=lambda x: x.version)
 
@@ -758,14 +817,14 @@ async def generate_order_svg(
 
             # Check if image already has any completed SVG (from any coloring version)
             has_completed_svg = any(
-                sv.status == ImageProcessingStatus.COMPLETED for cv in img.coloring_versions for sv in cv.svg_versions
+                sv.status == SvgProcessingStatus.COMPLETED for cv in img.coloring_versions for sv in cv.svg_versions
             )
             if has_completed_svg:
                 continue  # Skip - already has SVG
 
             # Check if any SVG is currently queued or processing
             is_svg_processing = any(
-                sv.status in (ImageProcessingStatus.QUEUED, ImageProcessingStatus.PROCESSING)
+                sv.status in (SvgProcessingStatus.QUEUED, SvgProcessingStatus.PROCESSING)
                 for cv in img.coloring_versions
                 for sv in cv.svg_versions
             )
@@ -779,7 +838,7 @@ async def generate_order_svg(
             svg_version = SvgVersion(
                 coloring_version_id=coloring_to_use.id,
                 version=next_version,
-                status=ImageProcessingStatus.QUEUED,
+                status=SvgProcessingStatus.QUEUED,
                 shape_stacking=req.shape_stacking,
                 group_by=req.group_by,
             )
@@ -840,7 +899,7 @@ async def generate_image_svg(
     svg_version = SvgVersion(
         coloring_version_id=coloring_to_use.id,
         version=next_version,
-        status=ImageProcessingStatus.QUEUED,
+        status=SvgProcessingStatus.QUEUED,
         shape_stacking=req.shape_stacking,
         group_by=req.group_by,
     )
@@ -852,16 +911,7 @@ async def generate_image_svg(
 
     await session.commit()
 
-    return SvgVersionResponse(
-        id=svg_version.id,
-        version=svg_version.version,
-        file_path=svg_version.file_path,
-        status=svg_version.status,
-        coloring_version_id=svg_version.coloring_version_id,
-        shape_stacking=svg_version.shape_stacking,
-        group_by=svg_version.group_by,
-        created_at=svg_version.created_at,
-    )
+    return _build_svg_version_response(svg_version)
 
 
 # =============================================================================
@@ -881,18 +931,7 @@ async def list_coloring_versions(
     result = await session.execute(statement)
     versions = result.scalars().all()
 
-    return [
-        ColoringVersionResponse(
-            id=v.id,  # type: ignore[arg-type]
-            version=v.version,
-            file_path=v.file_path,
-            status=v.status,
-            megapixels=v.megapixels,
-            steps=v.steps,
-            created_at=v.created_at,
-        )
-        for v in versions
-    ]
+    return [_build_coloring_version_response(v) for v in versions]
 
 
 @router.get("/images/{image_id}/svg-versions", response_model=list[SvgVersionResponse])
@@ -916,19 +955,7 @@ async def list_svg_versions(
     result = await session.execute(statement)
     versions = result.scalars().all()
 
-    return [
-        SvgVersionResponse(
-            id=v.id,  # type: ignore[arg-type]
-            version=v.version,
-            file_path=v.file_path,
-            status=v.status,
-            coloring_version_id=v.coloring_version_id,
-            shape_stacking=v.shape_stacking,
-            group_by=v.group_by,
-            created_at=v.created_at,
-        )
-        for v in versions
-    ]
+    return [_build_svg_version_response(v) for v in versions]
 
 
 # =============================================================================
@@ -1007,28 +1034,20 @@ async def retry_coloring_version(
     if not coloring_version:
         raise HTTPException(status_code=404, detail="Coloring version not found")
 
-    if coloring_version.status != ImageProcessingStatus.ERROR:
+    if coloring_version.status != ColoringProcessingStatus.ERROR:
         raise HTTPException(
             status_code=400,
             detail="Can only retry versions with error status",
         )
 
     # Reset status to QUEUED and re-dispatch the task
-    coloring_version.status = ImageProcessingStatus.QUEUED
+    coloring_version.status = ColoringProcessingStatus.QUEUED
     await session.commit()
 
     assert coloring_version.id is not None
     generate_coloring.send(coloring_version.id)
 
-    return ColoringVersionResponse(
-        id=coloring_version.id,
-        version=coloring_version.version,
-        file_path=coloring_version.file_path,
-        status=coloring_version.status,
-        megapixels=coloring_version.megapixels,
-        steps=coloring_version.steps,
-        created_at=coloring_version.created_at,
-    )
+    return _build_coloring_version_response(coloring_version)
 
 
 @router.post("/svg-versions/{version_id}/retry", response_model=SvgVersionResponse)
@@ -1041,71 +1060,17 @@ async def retry_svg_version(
     if not svg_version:
         raise HTTPException(status_code=404, detail="SVG version not found")
 
-    if svg_version.status != ImageProcessingStatus.ERROR:
+    if svg_version.status != SvgProcessingStatus.ERROR:
         raise HTTPException(
             status_code=400,
             detail="Can only retry versions with error status",
         )
 
     # Reset status to QUEUED and re-dispatch the task
-    svg_version.status = ImageProcessingStatus.QUEUED
+    svg_version.status = SvgProcessingStatus.QUEUED
     await session.commit()
 
     assert svg_version.id is not None
     vectorize_image.send(svg_version.id)
 
-    return SvgVersionResponse(
-        id=svg_version.id,
-        version=svg_version.version,
-        file_path=svg_version.file_path,
-        status=svg_version.status,
-        coloring_version_id=svg_version.coloring_version_id,
-        shape_stacking=svg_version.shape_stacking,
-        group_by=svg_version.group_by,
-        created_at=svg_version.created_at,
-    )
-
-
-# =============================================================================
-# File Serving Endpoints
-# =============================================================================
-
-
-@router.get("/coloring-versions/{version_id}/file")
-async def get_coloring_file(
-    version_id: int,
-    session: AsyncSession = Depends(get_session),
-) -> FileResponse:
-    """Serve a coloring version PNG file."""
-    coloring_version = await session.get(ColoringVersion, version_id)
-    if not coloring_version:
-        raise HTTPException(status_code=404, detail="Coloring version not found")
-
-    if not coloring_version.file_path:
-        raise HTTPException(status_code=404, detail="Coloring file not generated yet")
-
-    file_path = Path(coloring_version.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Coloring file not found")
-
-    return FileResponse(file_path, media_type="image/png")
-
-
-@router.get("/svg-versions/{version_id}/file")
-async def get_svg_file(
-    version_id: int,
-    session: AsyncSession = Depends(get_session),
-) -> FileResponse:
-    """Serve an SVG version file."""
-    svg_version = await session.get(SvgVersion, version_id)
-    if not svg_version:
-        raise HTTPException(status_code=404, detail="SVG version not found")
-
-    if not svg_version.file_path:
-        raise HTTPException(status_code=404, detail="SVG file not generated yet")
-
-    file_path = Path(svg_version.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="SVG file not found")
-
-    return FileResponse(file_path, media_type="image/svg+xml")
+    return _build_svg_version_response(svg_version)

@@ -3,7 +3,12 @@
 # ruff: noqa: I001 - Import order matters for SQLAlchemy relationship resolution
 from sqlmodel import SQLModel
 
-from app.models.enums import ImageProcessingStatus, OrderStatus
+from app.models.enums import (
+    ColoringProcessingStatus,
+    ImageProcessingStatus,
+    OrderStatus,
+    SvgProcessingStatus,
+)
 
 # order.py must be imported first (defines Image), then coloring.py (references Image)
 from app.models.order import Image, LineItem, Order
@@ -16,6 +21,8 @@ __all__ = [
     "Image",
     "OrderStatus",
     "ImageProcessingStatus",
+    "ColoringProcessingStatus",
+    "SvgProcessingStatus",
     "ColoringVersion",
     "SvgVersion",
 ]

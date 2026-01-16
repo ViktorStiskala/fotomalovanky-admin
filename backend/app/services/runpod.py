@@ -4,6 +4,7 @@ import asyncio
 import base64
 import io
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import httpx
@@ -137,12 +138,17 @@ async def submit_job(
             raise RunPodError(f"Request error: {e}") from e
 
 
-async def poll_job(job_id: str) -> bytes:
+async def poll_job(
+    job_id: str,
+    on_status_change: Callable[[str], Awaitable[None]] | None = None,
+) -> bytes:
     """
     Poll a RunPod job until completion.
 
     Args:
         job_id: Job ID to poll
+        on_status_change: Optional async callback invoked when RunPod status changes.
+            Receives the new status string (e.g., "IN_QUEUE", "IN_PROGRESS").
 
     Returns:
         Generated image bytes
@@ -152,6 +158,7 @@ async def poll_job(job_id: str) -> bytes:
         RunPodTimeoutError: If job times out
     """
     start_time = time.time()
+    last_status: str | None = None
 
     async with httpx.AsyncClient() as client:
         while True:
@@ -170,6 +177,12 @@ async def poll_job(job_id: str) -> bytes:
 
                 status = result.get("status")
                 logger.debug("RunPod job status", job_id=job_id, status=status)
+
+                # Call callback if status changed
+                if on_status_change and status != last_status:
+                    last_status = status
+                    if status in ("IN_QUEUE", "IN_PROGRESS"):
+                        await on_status_change(status)
 
                 if status == "COMPLETED":
                     output = result.get("output", {})

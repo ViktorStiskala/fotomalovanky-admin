@@ -2,8 +2,13 @@
  * Mercure SSE event data structure
  */
 export interface MercureEvent {
-  type: "order_update" | "list_update";
+  type: "order_update" | "list_update" | "image_status";
   order_number?: string;
+  // For image_status events:
+  image_id?: number;
+  status_type?: "coloring" | "svg";
+  version_id?: number;
+  status?: string;
 }
 
 /**
@@ -18,25 +23,52 @@ export const ORDER_STATUS_DISPLAY: Record<string, { label: string; color: string
 };
 
 /**
- * Processing status display configuration (for coloring/SVG generation)
+ * Coloring processing status display configuration (RunPod workflow)
  */
-export const PROCESSING_STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
-  pending: { label: "Čeká", color: "bg-gray-100 text-gray-800" },
-  queued: { label: "Ve frontě", color: "bg-blue-100 text-blue-800" },
-  processing: { label: "Zpracovává se...", color: "bg-yellow-100 text-yellow-800" },
+export const COLORING_STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  pending: { label: "Čeká na odeslání", color: "bg-gray-100 text-gray-800" },
+  queued: { label: "Čeká ve frontě", color: "bg-blue-100 text-blue-800" },
+  processing: { label: "Zpracovává se...", color: "bg-blue-100 text-blue-800" },
+  runpod_submitting: { label: "Runpod: odesílání na server", color: "bg-blue-100 text-blue-800" },
+  runpod_submitted: { label: "Runpod: úloha přijata", color: "bg-blue-100 text-blue-800" },
+  runpod_queued: { label: "Runpod: čeká ve frontě", color: "bg-yellow-100 text-yellow-800" },
+  runpod_processing: { label: "Runpod: Probíhá zpracování", color: "bg-yellow-100 text-yellow-800" },
   completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
   error: { label: "Chyba", color: "bg-red-100 text-red-800" },
 };
 
 /**
- * Get processing status display info
+ * SVG processing status display configuration (Vectorizer.ai workflow)
  */
-export function getProcessingStatusDisplay(status: string | null): {
+export const SVG_STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  pending: { label: "Čeká na odeslání", color: "bg-gray-100 text-gray-800" },
+  queued: { label: "Čeká ve frontě", color: "bg-blue-100 text-blue-800" },
+  processing: { label: "Zpracovává se...", color: "bg-blue-100 text-blue-800" },
+  vectorizer_processing: { label: "Vectorizer: Probíhá zpracování", color: "bg-yellow-100 text-yellow-800" },
+  completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
+  error: { label: "Chyba", color: "bg-red-100 text-red-800" },
+};
+
+/**
+ * Get coloring status display info
+ */
+export function getColoringStatusDisplay(status: string | null): {
   label: string;
   color: string;
 } {
   if (!status) return { label: "—", color: "" };
-  return PROCESSING_STATUS_DISPLAY[status] || { label: status, color: "bg-gray-100 text-gray-800" };
+  return COLORING_STATUS_DISPLAY[status] || { label: status, color: "bg-gray-100 text-gray-800" };
+}
+
+/**
+ * Get SVG status display info
+ */
+export function getSvgStatusDisplay(status: string | null): {
+  label: string;
+  color: string;
+} {
+  if (!status) return { label: "—", color: "" };
+  return SVG_STATUS_DISPLAY[status] || { label: status, color: "bg-gray-100 text-gray-800" };
 }
 
 /**
