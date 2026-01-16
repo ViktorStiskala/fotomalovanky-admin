@@ -1,11 +1,15 @@
 """Order, LineItem, and Image database models."""
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, Column, DateTime
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.models.enums import OrderStatus
+
+if TYPE_CHECKING:
+    from app.models.coloring import ColoringVersion, SvgVersion
 
 
 def _utc_now() -> datetime:
@@ -63,5 +67,34 @@ class Image(SQLModel, table=True):
     local_path: str | None = None  # Path after download
     downloaded_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
+    # Selected versions (FK to coloring_versions and svg_versions)
+    selected_coloring_id: int | None = Field(default=None, foreign_key="coloring_versions.id")
+    selected_svg_id: int | None = Field(default=None, foreign_key="svg_versions.id")
+
     # Relationships
     line_item: LineItem = Relationship(back_populates="images")
+
+    # All coloring versions for this image
+    # (string annotations required for cross-module SQLAlchemy resolution)
+    coloring_versions: list["ColoringVersion"] = Relationship(  # noqa: UP037
+        back_populates="image",
+        sa_relationship_kwargs={"foreign_keys": "[ColoringVersion.image_id]"},
+    )
+
+    # Selected coloring version (nullable relationship)
+    selected_coloring: "ColoringVersion" = Relationship(  # noqa: UP037
+        sa_relationship_kwargs={
+            "foreign_keys": "[Image.selected_coloring_id]",
+            "lazy": "joined",
+            "uselist": False,
+        },
+    )
+
+    # Selected SVG version (nullable relationship)
+    selected_svg: "SvgVersion" = Relationship(  # noqa: UP037
+        sa_relationship_kwargs={
+            "foreign_keys": "[Image.selected_svg_id]",
+            "lazy": "joined",
+            "uselist": False,
+        },
+    )

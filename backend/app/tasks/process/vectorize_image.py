@@ -1,0 +1,162 @@
+"""SVG vectorization background task."""
+
+import asyncio
+from pathlib import Path
+
+import dramatiq
+import structlog
+
+from app.config import settings
+from app.models.enums import ImageProcessingStatus
+from app.services.vectorizer import VectorizerBadRequestError, VectorizerError
+from app.services.vectorizer import vectorize_image as vectorize_service
+from app.tasks.image_download import task_db_session
+
+logger = structlog.get_logger(__name__)
+
+
+def _get_svg_path(order_id: int, line_item_id: int, image_id: int, version: int) -> Path:
+    """Generate storage path for an SVG version."""
+    base = Path(settings.storage_path)
+    return base / str(order_id) / str(line_item_id) / f"image_{image_id}_svg_v{version}.svg"
+
+
+async def _vectorize_image_async(svg_version_id: int) -> None:
+    """Async implementation of SVG vectorization."""
+    from app.models.coloring import ColoringVersion, SvgVersion
+    from app.models.order import Image, LineItem
+    from app.services.mercure import publish_order_update
+
+    logger.info("Starting SVG vectorization", svg_version_id=svg_version_id)
+
+    async with task_db_session() as session:
+        # Load SVG version
+        svg_version = await session.get(SvgVersion, svg_version_id)
+        if not svg_version:
+            logger.error("SvgVersion not found", svg_version_id=svg_version_id)
+            return
+
+        # Load the coloring version
+        coloring_version = await session.get(ColoringVersion, svg_version.coloring_version_id)
+        if not coloring_version:
+            logger.error(
+                "ColoringVersion not found",
+                coloring_version_id=svg_version.coloring_version_id,
+            )
+            svg_version.status = ImageProcessingStatus.ERROR
+            await session.commit()
+            return
+
+        # Load the image
+        image = await session.get(Image, coloring_version.image_id)
+        if not image:
+            logger.error("Image not found", image_id=coloring_version.image_id)
+            svg_version.status = ImageProcessingStatus.ERROR
+            await session.commit()
+            return
+        assert image.id is not None
+
+        # Load line item to get order_id
+        line_item = await session.get(LineItem, image.line_item_id)
+        if not line_item:
+            logger.error("LineItem not found", line_item_id=image.line_item_id)
+            svg_version.status = ImageProcessingStatus.ERROR
+            await session.commit()
+            return
+
+        order_id = line_item.order_id
+
+        # Get order number for Mercure
+        from app.models.order import Order
+
+        order = await session.get(Order, order_id)
+        order_number = order.shopify_order_number.lstrip("#") if order else str(order_id)
+
+        try:
+            # Update status to PROCESSING
+            svg_version.status = ImageProcessingStatus.PROCESSING
+            await session.commit()
+            await publish_order_update(order_number)
+
+            # Verify source coloring image exists
+            if not coloring_version.file_path:
+                raise FileNotFoundError("Coloring version has no file")
+
+            input_path = Path(coloring_version.file_path)
+            if not input_path.exists():
+                raise FileNotFoundError(f"Coloring file not found: {input_path}")
+
+            # Generate output path
+            output_path = _get_svg_path(
+                order_id=order_id,
+                line_item_id=image.line_item_id,
+                image_id=image.id,
+                version=svg_version.version,
+            )
+
+            # Process through Vectorizer
+            await vectorize_service(
+                input_path=input_path,
+                output_path=output_path,
+                shape_stacking=svg_version.shape_stacking,
+                group_by=svg_version.group_by,
+            )
+
+            # Update version record
+            svg_version.file_path = str(output_path)
+            svg_version.status = ImageProcessingStatus.COMPLETED
+
+            # Set as selected SVG version for the image
+            image.selected_svg_id = svg_version.id
+
+            await session.commit()
+            await publish_order_update(order_number)
+
+            logger.info(
+                "SVG vectorization completed",
+                svg_version_id=svg_version_id,
+                output_path=str(output_path),
+            )
+
+        except VectorizerBadRequestError as e:
+            # Bad request - don't retry, just mark as error
+            logger.error(
+                "SVG vectorization failed (bad request)",
+                svg_version_id=svg_version_id,
+                error=str(e),
+            )
+            svg_version.status = ImageProcessingStatus.ERROR
+            await session.commit()
+            await publish_order_update(order_number)
+            # Don't re-raise - the throws parameter will prevent retries
+            raise
+
+        except (VectorizerError, FileNotFoundError, OSError) as e:
+            logger.error(
+                "SVG vectorization failed",
+                svg_version_id=svg_version_id,
+                error=str(e),
+            )
+            svg_version.status = ImageProcessingStatus.ERROR
+            await session.commit()
+            await publish_order_update(order_number)
+            raise
+
+
+@dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000, throws=VectorizerBadRequestError)
+def vectorize_image(svg_version_id: int) -> None:
+    """
+    Vectorize a coloring book to SVG.
+
+    This task:
+    1. Loads the SvgVersion and associated ColoringVersion
+    2. Sets status to PROCESSING
+    3. Processes coloring PNG through Vectorizer.ai API
+    4. Saves output and updates status to COMPLETED
+    5. Sets as selected SVG version for the image
+    6. Publishes Mercure update
+
+    Args:
+        svg_version_id: ID of the SvgVersion record to process
+    """
+    asyncio.run(_vectorize_image_async(svg_version_id))

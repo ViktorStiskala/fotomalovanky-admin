@@ -33,7 +33,9 @@ services:
 
   mercure:
     image: dunglas/mercure
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       SERVER_NAME: ":3000"
       MERCURE_PUBLISHER_JWT_KEY: ${MERCURE_PUBLISHER_JWT_KEY:-change-me-publisher-secret-key}
@@ -57,7 +59,11 @@ services:
     build:
       context: ./backend
       dockerfile: .docker/dev/Dockerfile
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+      - path: backend/.env
+        required: false
     volumes:
       - ./backend:/app
       - /app/.venv
@@ -70,6 +76,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       MERCURE_URL: http://mercure:3000/.well-known/mercure
       STORAGE_PATH: /data/images
+      BACKEND_CORS_ORIGINS: '["http://localhost:5173", "http://127.0.0.1:5173"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,7 +90,11 @@ services:
     build:
       context: ./backend
       dockerfile: .docker/dev/Dockerfile
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
+      - path: backend/.env
+        required: false
     volumes:
       - ./backend:/app
       - /app/.venv
@@ -94,6 +105,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       MERCURE_URL: http://mercure:3000/.well-known/mercure
       STORAGE_PATH: /data/images
+      BACKEND_CORS_ORIGINS: '["http://localhost:5173", "http://127.0.0.1:5173"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,7 +130,7 @@ services:
     env_file: .env
     environment:
       VITE_API_URL: http://localhost:8000
-      VITE_MERCURE_URL: http://localhost:3000/.well-known/mercure
+      VITE_MERCURE_URL: ${MERCURE_URL:-http://localhost:3000/.well-known/mercure}
       VITE_SHOPIFY_STORE_HANDLE: ${SHOPIFY_STORE_HANDLE:-}
     depends_on:
       - backend

@@ -2,6 +2,8 @@
 
 import asyncio
 import re
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import dramatiq
@@ -19,8 +21,12 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _create_task_session() -> async_sessionmaker[AsyncSession]:
-    """Create a fresh engine and session maker for use in a single task.
+@asynccontextmanager
+async def task_db_session() -> AsyncGenerator[AsyncSession]:
+    """Context manager that provides a database session for background tasks.
+
+    Creates a fresh engine bound to the current event loop, yields a session,
+    and ensures proper cleanup of both the session and engine connection pool.
 
     This is necessary because each asyncio.run() call creates a new event loop,
     and the database connections must be bound to the current event loop.
@@ -29,12 +35,22 @@ def _create_task_session() -> async_sessionmaker[AsyncSession]:
         settings.database_url,
         echo=settings.debug,
         future=True,
+        pool_size=2,
+        max_overflow=3,
+        pool_pre_ping=True,
     )
-    return async_sessionmaker(
+    session_maker = async_sessionmaker(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
+    async with session_maker() as session:
+        try:
+            yield session
+        finally:
+            pass  # Session cleanup handled by context manager
+    # Dispose engine to release all connections back to PostgreSQL
+    await engine.dispose()
 
 
 def extract_numeric_id(gid: str) -> int:
@@ -173,9 +189,8 @@ async def _ingest_order_async(order_id: int) -> None:
     from app.tasks.image_download import download_order_images
 
     logger.info("Starting order ingestion", order_id=order_id)
-    task_session_maker = _create_task_session()
 
-    async with task_session_maker() as session:
+    async with task_db_session() as session:
         order = await session.get(Order, order_id)
         if not order:
             logger.error("Order not found", order_id=order_id)

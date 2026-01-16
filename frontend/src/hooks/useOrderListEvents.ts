@@ -1,8 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useCallback } from "react";
 import { queryClient } from "@/lib/queryClient";
+import { useMercure } from "./useMercure";
 import type { MercureEvent } from "@/types";
-
-const MERCURE_URL = import.meta.env.VITE_MERCURE_URL || "http://localhost:3000/.well-known/mercure";
 
 /**
  * Custom hook that subscribes to Mercure SSE events for the orders list.
@@ -17,48 +16,18 @@ const MERCURE_URL = import.meta.env.VITE_MERCURE_URL || "http://localhost:3000/.
  * 4. TanStack Query refetches fresh data from API
  */
 export function useOrderListEvents(): void {
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const handleMessage = useCallback((data: unknown) => {
+    const event = data as MercureEvent;
+    console.log("[Mercure] Order list event received:", event);
 
-  useEffect(() => {
-    // Build Mercure subscription URL
-    const url = new URL(MERCURE_URL);
-    url.searchParams.append("topic", "orders");
+    // Invalidate the orders list query to trigger a refetch
+    queryClient.invalidateQueries({ queryKey: ["orders"] });
 
-    // Create EventSource connection
-    const eventSource = new EventSource(url.toString());
-    eventSourceRef.current = eventSource;
-
-    eventSource.onmessage = (event: MessageEvent) => {
-      try {
-        const data: MercureEvent = JSON.parse(event.data);
-        console.log("[Mercure] Order list event received:", data);
-
-        // Invalidate the orders list query to trigger a refetch
-        queryClient.invalidateQueries({ queryKey: ["orders"] });
-
-        // If it's an update to a specific order, also invalidate that order's query
-        if (data.type === "order_update" && data.order_number) {
-          queryClient.invalidateQueries({ queryKey: ["order", data.order_number] });
-        }
-      } catch (error) {
-        console.error("[Mercure] Failed to parse event:", error);
-      }
-    };
-
-    eventSource.onerror = (error) => {
-      console.error("[Mercure] EventSource error:", error);
-      // EventSource will automatically try to reconnect
-    };
-
-    eventSource.onopen = () => {
-      console.log("[Mercure] Connected to orders topic");
-    };
-
-    // Cleanup on unmount
-    return () => {
-      console.log("[Mercure] Disconnecting from orders topic");
-      eventSource.close();
-      eventSourceRef.current = null;
-    };
+    // If it's an update to a specific order, also invalidate that order's query
+    if (event.type === "order_update" && event.order_number) {
+      queryClient.invalidateQueries({ queryKey: ["order", event.order_number] });
+    }
   }, []);
+
+  useMercure("orders", handleMessage);
 }

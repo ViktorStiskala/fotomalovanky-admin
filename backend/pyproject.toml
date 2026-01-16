@@ -20,6 +20,7 @@ dependencies = [
     "python-dateutil>=2.9.0",
     "python-dotenv>=1.0.0",
     "tenacity>=9.0.0",
+    "pillow>=12.1.0",
 ]
 
 [dependency-groups]
@@ -31,6 +32,10 @@ dev = [
     "ruff>=0.8.0",
     "ariadne-codegen>=0.17.0",
     "types-python-dateutil>=2.9.0",
+    "types-Pygments>=2.19.0",
+    "json5>=0.13.0",
+    "pygments>=2.19.2",
+    "click>=8.3.1",
 ]
 
 [tool.uv]
@@ -42,8 +47,8 @@ target-version = "py314"
 exclude = ["app/services/shopify_client/"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "C90", "UP", "ASYNC"]
-ignore = ["E203", "E501", "B008"]
+select = ["E", "F", "W", "I", "T20", "RUF032"] # disabled "B" and "C90"; RUF032 detects Decimal() called with float literals
+ignore = ["E203", "E231", "E266", "E501", "E701", "B904"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

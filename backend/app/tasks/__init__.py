@@ -12,5 +12,7 @@ dramatiq.set_broker(redis_broker)
 # Import and re-export all tasks (must be after broker setup)
 from app.tasks.image_download import download_order_images  # noqa: E402
 from app.tasks.order_ingestion import ingest_order  # noqa: E402
+from app.tasks.process.generate_coloring import generate_coloring  # noqa: E402
+from app.tasks.process.vectorize_image import vectorize_image  # noqa: E402
 
-__all__ = ["ingest_order", "download_order_images"]
+__all__ = ["ingest_order", "download_order_images", "generate_coloring", "vectorize_image"]

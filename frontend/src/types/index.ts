@@ -18,6 +18,28 @@ export const ORDER_STATUS_DISPLAY: Record<string, { label: string; color: string
 };
 
 /**
+ * Processing status display configuration (for coloring/SVG generation)
+ */
+export const PROCESSING_STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  pending: { label: "Čeká", color: "bg-gray-100 text-gray-800" },
+  queued: { label: "Ve frontě", color: "bg-blue-100 text-blue-800" },
+  processing: { label: "Zpracovává se...", color: "bg-yellow-100 text-yellow-800" },
+  completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
+  error: { label: "Chyba", color: "bg-red-100 text-red-800" },
+};
+
+/**
+ * Get processing status display info
+ */
+export function getProcessingStatusDisplay(status: string | null): {
+  label: string;
+  color: string;
+} {
+  if (!status) return { label: "—", color: "" };
+  return PROCESSING_STATUS_DISPLAY[status] || { label: status, color: "bg-gray-100 text-gray-800" };
+}
+
+/**
  * Payment status display configuration (from Shopify displayFinancialStatus)
  */
 export const PAYMENT_STATUS_DISPLAY: Record<string, { label: string; color: string }> = {

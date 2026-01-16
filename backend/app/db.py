@@ -10,6 +10,10 @@ engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
     future=True,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,  # Verify connections before use
+    pool_recycle=300,  # Recycle connections after 5 minutes
 )
 
 async_session_maker = async_sessionmaker(
@@ -23,3 +27,11 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
     """Dependency that provides an async database session."""
     async with async_session_maker() as session:
         yield session
+
+
+async def dispose_engine() -> None:
+    """Dispose of the engine and release all connections.
+
+    Should be called during application shutdown.
+    """
+    await engine.dispose()

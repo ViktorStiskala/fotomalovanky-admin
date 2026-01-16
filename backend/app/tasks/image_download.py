@@ -1,6 +1,8 @@
 """Image download background task."""
 
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -25,8 +27,12 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _create_task_session() -> async_sessionmaker[AsyncSession]:
-    """Create a fresh engine and session maker for use in a single task.
+@asynccontextmanager
+async def task_db_session() -> AsyncGenerator[AsyncSession]:
+    """Context manager that provides a database session for background tasks.
+
+    Creates a fresh engine bound to the current event loop, yields a session,
+    and ensures proper cleanup of both the session and engine connection pool.
 
     This is necessary because each asyncio.run() call creates a new event loop,
     and the database connections must be bound to the current event loop.
@@ -35,12 +41,22 @@ def _create_task_session() -> async_sessionmaker[AsyncSession]:
         settings.database_url,
         echo=settings.debug,
         future=True,
+        pool_size=2,
+        max_overflow=3,
+        pool_pre_ping=True,
     )
-    return async_sessionmaker(
+    session_maker = async_sessionmaker(
         engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
+    async with session_maker() as session:
+        try:
+            yield session
+        finally:
+            pass  # Session cleanup handled by context manager
+    # Dispose engine to release all connections back to PostgreSQL
+    await engine.dispose()
 
 
 @retry(
@@ -144,10 +160,7 @@ async def _download_order_images_async(order_id: int) -> None:
 
     logger.info("Starting image download task", order_id=order_id)
 
-    # Create fresh session maker for this task's event loop
-    task_session_maker = _create_task_session()
-
-    async with task_session_maker() as session:
+    async with task_db_session() as session:
         # Get order from database with line items and images
         statement = (
             select(Order)

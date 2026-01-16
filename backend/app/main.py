@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import health, orders, webhooks
 from app.config import settings
+from app.db import dispose_engine
 
 logger = structlog.get_logger(__name__)
 
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     # Shutdown
     logger.info("Shutting down Fotomalovanky Admin API")
+    await dispose_engine()
+    logger.info("Database connections disposed")
 
 
 app = FastAPI(
