@@ -91,15 +91,18 @@ async def publish_order_update(order_number: str) -> bool:
     the order data from the API.
 
     Args:
-        order_number: The Shopify order number (e.g., "1270" without the "#")
+        order_number: The Shopify order number (with or without "#" prefix)
 
     Returns:
         True if published successfully, False otherwise
     """
+    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
+    clean_order_number = order_number.lstrip("#")
+
     return await _publish_to_mercure(
-        topics=["orders", f"orders/{order_number}"],
-        data=f'{{"type": "order_update", "order_number": "{order_number}"}}',
-        context={"order_number": order_number},
+        topics=["orders", f"orders/{clean_order_number}"],
+        data=f'{{"type": "order_update", "order_number": "{clean_order_number}"}}',
+        context={"order_number": clean_order_number},
     )
 
 
@@ -112,6 +115,44 @@ async def publish_order_list_update() -> bool:
     return await _publish_to_mercure(
         topics="orders",
         data='{"type": "list_update"}',
+    )
+
+
+async def publish_image_update(
+    order_number: str,
+    image_id: int,
+) -> bool:
+    """
+    Publish a general update event for a specific image.
+
+    Used when image metadata changes (e.g., selection changes) to notify
+    clients to refetch the image data.
+
+    Args:
+        order_number: The Shopify order number (with or without "#" prefix)
+        image_id: Database ID of the Image record
+
+    Returns:
+        True if published successfully, False otherwise
+    """
+    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
+    clean_order_number = order_number.lstrip("#")
+
+    data = json.dumps(
+        {
+            "type": "image_update",
+            "order_number": clean_order_number,
+            "image_id": image_id,
+        }
+    )
+
+    return await _publish_to_mercure(
+        topics=["orders", f"orders/{clean_order_number}"],
+        data=data,
+        context={
+            "order_number": clean_order_number,
+            "image_id": image_id,
+        },
     )
 
 
@@ -130,7 +171,7 @@ async def publish_image_status(
     the updated image data.
 
     Args:
-        order_number: The Shopify order number (e.g., "1270" without the "#")
+        order_number: The Shopify order number (with or without "#" prefix)
         image_id: Database ID of the Image record
         status_type: Either "coloring" or "svg"
         version_id: Database ID of ColoringVersion or SvgVersion
@@ -139,10 +180,13 @@ async def publish_image_status(
     Returns:
         True if published successfully, False otherwise
     """
+    # Strip "#" prefix for topic matching (frontend uses "orders/1273", not "orders/#1273")
+    clean_order_number = order_number.lstrip("#")
+
     data = json.dumps(
         {
             "type": "image_status",
-            "order_number": order_number,
+            "order_number": clean_order_number,
             "image_id": image_id,
             "status_type": status_type,
             "version_id": version_id,
@@ -151,10 +195,10 @@ async def publish_image_status(
     )
 
     return await _publish_to_mercure(
-        topics=["orders", f"orders/{order_number}"],
+        topics=["orders", f"orders/{clean_order_number}"],
         data=data,
         context={
-            "order_number": order_number,
+            "order_number": clean_order_number,
             "image_id": image_id,
             "status_type": status_type,
             "version_id": version_id,

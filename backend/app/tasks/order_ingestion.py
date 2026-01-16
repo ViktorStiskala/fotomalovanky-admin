@@ -197,7 +197,7 @@ async def _ingest_order_async(order_id: int) -> None:
             return
 
         assert order.id is not None, "Order ID cannot be None after database fetch"
-        order_number = order.shopify_order_number.lstrip("#") if order.shopify_order_number else str(order.id)
+        order_number = order.clean_order_number if order.shopify_order_number else str(order.id)
 
         try:
             order.status = OrderStatus.PROCESSING

@@ -7,9 +7,10 @@ import type { MercureEvent } from "@/types";
 /**
  * Custom hook that subscribes to Mercure SSE events for a specific order.
  *
- * Handles two types of events:
+ * Handles three types of events:
  * - `order_update`: Full refetch of order data (structural changes like COMPLETED, ERROR, new version)
  * - `image_status`: Efficient single image update (status-only changes during processing)
+ * - `image_update`: Efficient single image update (selection changes, metadata updates)
  *
  * This enables real-time status updates as background workers process the order,
  * with minimal network overhead during frequent status changes.
@@ -22,7 +23,7 @@ export function useOrderEvents(orderNumber: string): void {
       const event = data as MercureEvent;
       console.log(`[Mercure] Order ${orderNumber} event received:`, event);
 
-      if (event.type === "image_status" && event.image_id) {
+      if ((event.type === "image_status" || event.type === "image_update") && event.image_id) {
         // Efficient update: fetch only the updated image
         try {
           const imageData = await fetchImage(orderNumber, event.image_id);

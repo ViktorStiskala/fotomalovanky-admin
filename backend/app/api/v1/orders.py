@@ -15,7 +15,7 @@ from app.db import get_session
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import ColoringProcessingStatus, OrderStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
-from app.services.mercure import publish_order_list_update
+from app.services.mercure import publish_image_update, publish_order_list_update
 from app.services.shopify import list_recent_orders
 from app.tasks import generate_coloring, ingest_order, vectorize_image
 from app.utils import build_customer_name, file_path_to_url, normalize_order_number, to_api_timezone
@@ -688,7 +688,10 @@ async def generate_order_coloring(
         session.add(coloring_version)
         await session.flush()
 
+        # Auto-select the new version
         assert coloring_version.id is not None
+        image.selected_coloring_id = coloring_version.id
+
         generate_coloring.send(coloring_version.id)
         queued += 1
 
@@ -709,7 +712,15 @@ async def generate_image_coloring(
     """Generate a coloring book for a single image."""
     req = request or GenerateColoringRequest()
 
-    image = await session.get(Image, image_id)
+    # Load image with line_item and order to get the order number
+    statement = (
+        select(Image)
+        .options(selectinload(Image.line_item).selectinload(LineItem.order))  # type: ignore[arg-type]
+        .where(Image.id == image_id)
+    )
+    result = await session.execute(statement)
+    image = result.scalars().first()
+
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -732,10 +743,16 @@ async def generate_image_coloring(
     session.add(coloring_version)
     await session.flush()
 
+    # Auto-select the new version
     assert coloring_version.id is not None
+    image.selected_coloring_id = coloring_version.id
+
     generate_coloring.send(coloring_version.id)
 
     await session.commit()
+
+    # Emit Mercure event for selection change
+    await publish_image_update(image.clean_order_number, image_id)
 
     return _build_coloring_version_response(coloring_version)
 
@@ -845,7 +862,10 @@ async def generate_order_svg(
             session.add(svg_version)
             await session.flush()
 
+            # Auto-select the new version
             assert svg_version.id is not None
+            img.selected_svg_id = svg_version.id
+
             vectorize_image.send(svg_version.id)
             queued += 1
 
@@ -872,10 +892,13 @@ async def generate_image_svg(
     """Generate an SVG for a single image from its selected coloring version."""
     req = request or GenerateSvgRequest()
 
-    # Get image with coloring versions
+    # Get image with coloring versions, line_item and order
     statement = (
         select(Image)
-        .options(selectinload(Image.coloring_versions))  # type: ignore[arg-type]
+        .options(
+            selectinload(Image.coloring_versions),  # type: ignore[arg-type]
+            selectinload(Image.line_item).selectinload(LineItem.order),  # type: ignore[arg-type]
+        )
         .where(Image.id == image_id)
     )
     result = await session.execute(statement)
@@ -906,10 +929,16 @@ async def generate_image_svg(
     session.add(svg_version)
     await session.flush()
 
+    # Auto-select the new version
     assert svg_version.id is not None
+    image.selected_svg_id = svg_version.id
+
     vectorize_image.send(svg_version.id)
 
     await session.commit()
+
+    # Emit Mercure event for selection change
+    await publish_image_update(image.clean_order_number, image_id)
 
     return _build_svg_version_response(svg_version)
 
@@ -970,7 +999,15 @@ async def select_coloring_version(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Select a coloring version as the default for an image."""
-    image = await session.get(Image, image_id)
+    # Load image with line_item and order to get the order number
+    statement = (
+        select(Image)
+        .options(selectinload(Image.line_item).selectinload(LineItem.order))  # type: ignore[arg-type]
+        .where(Image.id == image_id)
+    )
+    result = await session.execute(statement)
+    image = result.scalars().first()
+
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -987,6 +1024,10 @@ async def select_coloring_version(
     image.selected_coloring_id = version_id
     await session.commit()
 
+    # Emit Mercure event for selection change
+    logger.info("Emitting selection change event", image_id=image_id, order_number=image.clean_order_number)
+    await publish_image_update(image.clean_order_number, image_id)
+
     return {"status": "ok", "message": f"Selected coloring version {version_id}"}
 
 
@@ -997,7 +1038,15 @@ async def select_svg_version(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Select an SVG version as the default for an image."""
-    image = await session.get(Image, image_id)
+    # Load image with line_item and order to get the order number
+    statement = (
+        select(Image)
+        .options(selectinload(Image.line_item).selectinload(LineItem.order))  # type: ignore[arg-type]
+        .where(Image.id == image_id)
+    )
+    result = await session.execute(statement)
+    image = result.scalars().first()
+
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
 
@@ -1015,6 +1064,10 @@ async def select_svg_version(
 
     image.selected_svg_id = version_id
     await session.commit()
+
+    # Emit Mercure event for selection change
+    logger.info("Emitting selection change event", image_id=image_id, order_number=image.clean_order_number)
+    await publish_image_update(image.clean_order_number, image_id)
 
     return {"status": "ok", "message": f"Selected SVG version {version_id}"}
 

@@ -65,7 +65,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
 
         # Get order number for Mercure
         order = await session.get(Order, order_id)
-        order_number = order.shopify_order_number.lstrip("#") if order else str(order_id)
+        order_number = order.clean_order_number if order else str(order_id)
 
         # Publish initial PROCESSING status
         await publish_image_status(

@@ -100,6 +100,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
       setShowColoringSettings(false);
+      setActiveTab("coloring");
     },
   });
 
@@ -251,7 +252,11 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
       <div className="border rounded-lg p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">Vygenerovat SVG</span>
+            <span className="text-sm font-medium">
+              {selectedColoring
+                ? `Vygenerovat SVG (omalovánka v${selectedColoring.version})`
+                : "Vygenerovat SVG"}
+            </span>
             {!hasCompletedColoring && (
               <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
                 Nejprve vygenerujte omalovánku
@@ -396,7 +401,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                           {status.label}
                           {isError && (
                             <Icon
-                              icon="mdi:refresh"
+                              name="refresh"
                               className={`w-3.5 h-3.5 cursor-pointer hover:scale-125 transition-transform ${retryColoringMutation.isPending ? "animate-spin" : ""}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -493,7 +498,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                           {status.label}
                           {isError && (
                             <Icon
-                              icon="mdi:refresh"
+                              name="refresh"
                               className={`w-3.5 h-3.5 cursor-pointer hover:scale-125 transition-transform ${retrySvgMutation.isPending ? "animate-spin" : ""}`}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -520,7 +525,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
               className="absolute top-3 right-3 p-1.5 bg-white/20 hover:bg-white/30 rounded text-white z-10"
               onClick={() => setPreviewImage(null)}
             >
-              <Icon icon="mdi:close-box-outline" className="w-6 h-6" />
+              <Icon name="close-box-outline" className="w-6 h-6" />
             </button>
             {previewImage && (
               <img

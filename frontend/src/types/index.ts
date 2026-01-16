@@ -2,7 +2,7 @@
  * Mercure SSE event data structure
  */
 export interface MercureEvent {
-  type: "order_update" | "list_update" | "image_status";
+  type: "order_update" | "list_update" | "image_status" | "image_update";
   order_number?: string;
   // For image_status events:
   image_id?: number;
