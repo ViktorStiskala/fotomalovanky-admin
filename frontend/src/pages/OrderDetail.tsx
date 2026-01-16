@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { Icon } from "@iconify/react";
+import { Icon } from "@/components/icons";
 import {
   fetchOrder,
   syncOrder,
@@ -182,7 +182,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                 })
               }
             >
-              <Icon icon="mdi:fullscreen" className="w-5 h-5" />
+              <Icon name="fullscreen" className="w-5 h-5" />
             </button>
           </>
         ) : null}
@@ -353,7 +353,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                         })
                       }
                     >
-                      <Icon icon="mdi:fullscreen" className="w-5 h-5" />
+                      <Icon name="fullscreen" className="w-5 h-5" />
                     </button>
                   </>
                 ) : (
@@ -439,7 +439,7 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
                             })
                           }
                         >
-                          <Icon icon="mdi:fullscreen" className="w-5 h-5" />
+                          <Icon name="fullscreen" className="w-5 h-5" />
                         </button>
                       </>
                     );
