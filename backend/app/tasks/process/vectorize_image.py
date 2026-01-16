@@ -28,7 +28,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
     """Async implementation of SVG vectorization."""
     from app.models.coloring import ColoringVersion, SvgVersion
     from app.models.order import Image, LineItem, Order
-    from app.services.mercure import publish_image_status, publish_order_update
+    from app.services.mercure import publish_image_status
 
     logger.info("Starting SVG vectorization", svg_version_id=svg_version_id)
 
@@ -136,8 +136,14 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
 
             await session.commit()
 
-            # Publish order_update for COMPLETED (structural change - file now available)
-            await publish_order_update(order_number)
+            # Publish image_status for COMPLETED
+            await publish_image_status(
+                order_number=order_number,
+                image_id=image_id,
+                status_type="svg",
+                version_id=svg_version_id,
+                status=SvgProcessingStatus.COMPLETED,
+            )
 
             logger.info(
                 "SVG vectorization completed",
@@ -154,8 +160,14 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             )
             svg_version.status = SvgProcessingStatus.ERROR
             await session.commit()
-            # Publish order_update for ERROR (structural change)
-            await publish_order_update(order_number)
+            # Publish image_status for ERROR
+            await publish_image_status(
+                order_number=order_number,
+                image_id=image_id,
+                status_type="svg",
+                version_id=svg_version_id,
+                status=SvgProcessingStatus.ERROR,
+            )
             # Don't re-raise - the throws parameter will prevent retries
             raise
 
@@ -167,8 +179,14 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             )
             svg_version.status = SvgProcessingStatus.ERROR
             await session.commit()
-            # Publish order_update for ERROR (structural change)
-            await publish_order_update(order_number)
+            # Publish image_status for ERROR
+            await publish_image_status(
+                order_number=order_number,
+                image_id=image_id,
+                status_type="svg",
+                version_id=svg_version_id,
+                status=SvgProcessingStatus.ERROR,
+            )
             raise
 
 

@@ -57,7 +57,14 @@ interface ImageCardProps {
 }
 
 function ImageCard({ image, orderNumber }: ImageCardProps) {
-  const [activeTab, setActiveTab] = useState<"coloring" | "svg">("coloring");
+  // Access versions from new structure
+  const coloringVersions = image.versions.coloring;
+  const svgVersions = image.versions.svg;
+
+  // Default to SVG tab if SVG versions exist
+  const [activeTab, setActiveTab] = useState<"coloring" | "svg">(
+    svgVersions.length > 0 ? "svg" : "coloring"
+  );
   const [showColoringSettings, setShowColoringSettings] = useState(false);
   const [showSvgSettings, setShowSvgSettings] = useState(false);
   const [coloringMegapixels, setColoringMegapixels] = useState(1.0);
@@ -65,10 +72,6 @@ function ImageCard({ image, orderNumber }: ImageCardProps) {
   const [svgShapeStacking, setSvgShapeStacking] = useState("stacked");
   const [svgGroupBy, setSvgGroupBy] = useState("color");
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
-
-  // Access versions from new structure
-  const coloringVersions = image.versions.coloring;
-  const svgVersions = image.versions.svg;
 
   // Find selected versions
   const selectedColoring = coloringVersions.find(

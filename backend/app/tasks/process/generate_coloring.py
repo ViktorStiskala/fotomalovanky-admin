@@ -28,7 +28,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
     """Async implementation of coloring generation."""
     from app.models.coloring import ColoringVersion
     from app.models.order import Image, LineItem, Order
-    from app.services.mercure import publish_image_status, publish_order_update
+    from app.services.mercure import publish_image_status
 
     logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
 
@@ -145,8 +145,14 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
 
             await session.commit()
 
-            # Publish order_update for COMPLETED (structural change - file now available)
-            await publish_order_update(order_number)
+            # Publish image_status for COMPLETED
+            await publish_image_status(
+                order_number=order_number,
+                image_id=image_id,
+                status_type="coloring",
+                version_id=coloring_version_id,
+                status=ColoringProcessingStatus.COMPLETED,
+            )
 
             logger.info(
                 "Coloring generation completed",
@@ -162,8 +168,14 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             )
             coloring_version.status = ColoringProcessingStatus.ERROR
             await session.commit()
-            # Publish order_update for ERROR (structural change)
-            await publish_order_update(order_number)
+            # Publish image_status for ERROR
+            await publish_image_status(
+                order_number=order_number,
+                image_id=image_id,
+                status_type="coloring",
+                version_id=coloring_version_id,
+                status=ColoringProcessingStatus.ERROR,
+            )
             raise
 
 
