@@ -26,10 +26,10 @@ export default function OrderList() {
       setDismissedSuccess(false);
       setDismissedError(false);
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       // Invalidate and refetch orders list
       queryClient.invalidateQueries({ queryKey: ["orders"] });
-      console.log(`Imported ${result.imported} orders, skipped ${result.skipped} (already exist)`);
+      console.log("Shopify fetch task queued");
     },
   });
 
@@ -66,12 +66,7 @@ export default function OrderList() {
 
       {fetchMutation.isSuccess && !dismissedSuccess && (
         <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg text-green-800 text-sm flex justify-between items-center">
-          <span>
-            Nových: {fetchMutation.data.imported}, aktualizováno: {fetchMutation.data.updated}
-            {fetchMutation.data.skipped > 0 && (
-              <span className="text-green-600"> (přeskočeno: {fetchMutation.data.skipped})</span>
-            )}
-          </span>
+          <span>Stahování objednávek ze Shopify...</span>
           <button
             onClick={() => setDismissedSuccess(true)}
             className="text-green-600 hover:text-green-800 ml-4"

@@ -210,14 +210,13 @@ export async function syncOrder(orderNumber: string): Promise<{ status: string; 
 }
 
 export interface FetchFromShopifyResponse {
-  imported: number;
-  updated: number;
-  skipped: number;
-  total: number;
+  status: string;
+  message: string;
 }
 
 /**
- * Fetch recent orders from Shopify and import them
+ * Queue a background task to fetch recent orders from Shopify.
+ * The actual import happens asynchronously - progress is pushed via Mercure updates.
  */
 export async function fetchFromShopify(limit = 20): Promise<FetchFromShopifyResponse> {
   return api<FetchFromShopifyResponse>("/orders/fetch-from-shopify", {
