@@ -1,0 +1,1 @@
+"""Coloring processing tasks package."""

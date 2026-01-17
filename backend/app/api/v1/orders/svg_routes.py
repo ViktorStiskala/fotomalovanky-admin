@@ -3,7 +3,11 @@
 import structlog
 from fastapi import APIRouter, HTTPException
 
-from app.api.v1.orders.dependencies import ImageServiceDep, VectorizerServiceDep
+from app.api.v1.orders.dependencies import (
+    ImageServiceDep,
+    MercureServiceDep,
+    VectorizerServiceDep,
+)
 from app.api.v1.orders.schemas import (
     GenerateSvgRequest,
     GenerateSvgResponse,
@@ -15,9 +19,8 @@ from app.services.coloring.exceptions import (
     SvgVersionNotFound,
     VersionNotInErrorState,
 )
-from app.services.external.mercure import publish_image_update
 from app.services.orders.exceptions import ImageNotFound, OrderNotFound
-from app.tasks.process.vectorize_image import vectorize_image
+from app.tasks.coloring.vectorize_image import vectorize_image
 
 logger = structlog.get_logger(__name__)
 
@@ -62,6 +65,7 @@ async def generate_image_svg(
     image_id: int,
     service: VectorizerServiceDep,
     image_service: ImageServiceDep,
+    mercure: MercureServiceDep,
     request: GenerateSvgRequest | None = None,
 ) -> SvgVersionResponse:
     """Generate an SVG for a single image from its selected coloring version."""
@@ -80,7 +84,7 @@ async def generate_image_svg(
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.clean_order_number, image_id)
 
         return SvgVersionResponse.from_model(svg_version)
     except ImageNotFound:

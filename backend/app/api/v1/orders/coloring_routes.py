@@ -3,7 +3,11 @@
 import structlog
 from fastapi import APIRouter, HTTPException
 
-from app.api.v1.orders.dependencies import ColoringServiceDep, ImageServiceDep
+from app.api.v1.orders.dependencies import (
+    ColoringServiceDep,
+    ImageServiceDep,
+    MercureServiceDep,
+)
 from app.api.v1.orders.schemas import (
     ColoringVersionResponse,
     GenerateColoringRequest,
@@ -14,13 +18,12 @@ from app.services.coloring.exceptions import (
     NoImagesToProcess,
     VersionNotInErrorState,
 )
-from app.services.external.mercure import publish_image_update
 from app.services.orders.exceptions import (
     ImageNotDownloaded,
     ImageNotFound,
     OrderNotFound,
 )
-from app.tasks.process.generate_coloring import generate_coloring
+from app.tasks.coloring.generate_coloring import generate_coloring
 
 logger = structlog.get_logger(__name__)
 
@@ -65,6 +68,7 @@ async def generate_image_coloring(
     image_id: int,
     service: ColoringServiceDep,
     image_service: ImageServiceDep,
+    mercure: MercureServiceDep,
     request: GenerateColoringRequest | None = None,
 ) -> ColoringVersionResponse:
     """Generate a coloring book for a single image."""
@@ -83,7 +87,7 @@ async def generate_image_coloring(
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.clean_order_number, image_id)
 
         return ColoringVersionResponse.from_model(coloring_version)
     except ImageNotFound:

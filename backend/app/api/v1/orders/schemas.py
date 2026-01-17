@@ -7,8 +7,11 @@ from pydantic import BaseModel, field_serializer
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import ColoringProcessingStatus, OrderStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
+from app.services.storage.storage_service import LocalStorageService
 from app.utils.datetime_utils import to_api_timezone
-from app.utils.url_helpers import file_path_to_url
+
+# Module-level storage service for URL generation
+_storage = LocalStorageService()
 
 # =============================================================================
 # Response Schemas
@@ -88,7 +91,7 @@ class ColoringVersionResponse(BaseModel):
         return cls(
             id=cv.id,  # type: ignore[arg-type]
             version=cv.version,
-            url=file_path_to_url(cv.file_path),
+            url=_storage.get_public_url(cv.file_path),
             status=cv.status,
             options=ColoringOptionsResponse(
                 megapixels=cv.megapixels,
@@ -122,7 +125,7 @@ class SvgVersionResponse(BaseModel):
         return cls(
             id=sv.id,  # type: ignore[arg-type]
             version=sv.version,
-            url=file_path_to_url(sv.file_path),
+            url=_storage.get_public_url(sv.file_path),
             status=sv.status,
             coloring_version_id=sv.coloring_version_id,
             options=SvgOptionsResponse(
@@ -174,7 +177,7 @@ class ImageResponse(BaseModel):
         return cls(
             id=img.id,  # type: ignore[arg-type]
             position=img.position,
-            url=file_path_to_url(img.local_path),
+            url=_storage.get_public_url(img.local_path),
             downloaded_at=img.downloaded_at,
             selected_version_ids=SelectedVersionIdsResponse(
                 coloring=img.selected_coloring_id,
@@ -185,10 +188,7 @@ class ImageResponse(BaseModel):
                     ColoringVersionResponse.from_model(cv)
                     for cv in sorted(img.coloring_versions, key=lambda x: x.version)
                 ],
-                svg=[
-                    SvgVersionResponse.from_model(sv)
-                    for sv in sorted(all_svg_versions, key=lambda x: x.version)
-                ],
+                svg=[SvgVersionResponse.from_model(sv) for sv in sorted(all_svg_versions, key=lambda x: x.version)],
             ),
         )
 
@@ -212,10 +212,7 @@ class LineItemResponse(BaseModel):
             quantity=li.quantity,
             dedication=li.dedication,
             layout=li.layout,
-            images=[
-                ImageResponse.from_model(img)
-                for img in sorted(li.images, key=lambda x: x.position)
-            ],
+            images=[ImageResponse.from_model(img) for img in sorted(li.images, key=lambda x: x.position)],
         )
 
 
@@ -253,10 +250,7 @@ class OrderDetailResponse(BaseModel):
             shipping_method=order.shipping_method,
             status=order.status,
             created_at=order.created_at,
-            line_items=[
-                LineItemResponse.from_model(li)
-                for li in order.line_items
-            ],
+            line_items=[LineItemResponse.from_model(li) for li in order.line_items],
         )
 
 

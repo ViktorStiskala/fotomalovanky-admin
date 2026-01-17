@@ -12,193 +12,188 @@ from app.config import settings
 logger = structlog.get_logger(__name__)
 
 
-def create_mercure_jwt() -> str:
-    """
-    Create a JWT token for publishing to Mercure.
+class MercureService:
+    """Service for publishing events to Mercure SSE hub."""
 
-    The token grants permission to publish to any topic.
-    """
-    return jwt.encode(
-        {"mercure": {"publish": ["*"]}},
-        settings.mercure_publisher_jwt_key,
-        algorithm="HS256",
-    )
+    def _create_jwt(self) -> str:
+        """Create a JWT token for publishing to Mercure.
 
+        The token grants permission to publish to any topic.
+        """
+        return jwt.encode(
+            {"mercure": {"publish": ["*"]}},
+            settings.mercure_publisher_jwt_key,
+            algorithm="HS256",
+        )
 
-async def _publish_to_mercure(
-    topics: list[str] | str,
-    data: str,
-    *,
-    context: dict[str, str | int] | None = None,
-) -> bool:
-    """
-    Publish a message to Mercure hub.
+    async def _publish(
+        self,
+        topics: list[str] | str,
+        data: str,
+        *,
+        context: dict[str, str | int] | None = None,
+    ) -> bool:
+        """Publish a message to Mercure hub.
 
-    Args:
-        topics: Topic(s) to publish to (string or list of strings)
-        data: JSON data to publish
-        context: Optional context for logging (e.g., order_number)
+        Args:
+            topics: Topic(s) to publish to (string or list of strings)
+            data: JSON data to publish
+            context: Optional context for logging (e.g., order_number)
 
-    Returns:
-        True if published successfully, False otherwise
-    """
-    token = create_mercure_jwt()
-    log_context = context or {}
+        Returns:
+            True if published successfully, False otherwise
+        """
+        token = self._create_jwt()
+        log_context = context or {}
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                settings.mercure_url,
-                data={
-                    "topic": topics,
-                    "data": data,
-                },
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                timeout=10.0,
-            )
-            response.raise_for_status()
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    settings.mercure_url,
+                    data={
+                        "topic": topics,
+                        "data": data,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    timeout=10.0,
+                )
+                response.raise_for_status()
 
-            logger.info("Published to Mercure", topics=topics, **log_context)
-            return True
+                logger.info("Published to Mercure", topics=topics, **log_context)
+                return True
 
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                "Failed to publish to Mercure",
-                status_code=e.response.status_code,
-                topics=topics,
-                **log_context,
-            )
-            return False
-        except httpx.RequestError as e:
-            logger.error(
-                "Mercure request failed",
-                error=str(e),
-                topics=topics,
-                **log_context,
-            )
-            return False
+            except httpx.HTTPStatusError as e:
+                logger.error(
+                    "Failed to publish to Mercure",
+                    status_code=e.response.status_code,
+                    topics=topics,
+                    **log_context,
+                )
+                return False
+            except httpx.RequestError as e:
+                logger.error(
+                    "Mercure request failed",
+                    error=str(e),
+                    topics=topics,
+                    **log_context,
+                )
+                return False
 
+    async def publish_order_update(self, order_number: str) -> bool:
+        """Publish an order update event to Mercure.
 
-async def publish_order_update(order_number: str) -> bool:
-    """
-    Publish an order update event to Mercure.
+        This sends a lightweight "ping" to notify connected clients
+        that an order has been updated. Clients should then refetch
+        the order data from the API.
 
-    This sends a lightweight "ping" to notify connected clients
-    that an order has been updated. Clients should then refetch
-    the order data from the API.
+        Args:
+            order_number: The Shopify order number (with or without "#" prefix)
 
-    Args:
-        order_number: The Shopify order number (with or without "#" prefix)
+        Returns:
+            True if published successfully, False otherwise
+        """
+        clean_order_number = order_number.lstrip("#")
 
-    Returns:
-        True if published successfully, False otherwise
-    """
-    clean_order_number = order_number.lstrip("#")
+        return await self._publish(
+            topics=["orders", f"orders/{clean_order_number}"],
+            data=f'{{"type": "order_update", "order_number": "{clean_order_number}"}}',
+            context={"order_number": clean_order_number},
+        )
 
-    return await _publish_to_mercure(
-        topics=["orders", f"orders/{clean_order_number}"],
-        data=f'{{"type": "order_update", "order_number": "{clean_order_number}"}}',
-        context={"order_number": clean_order_number},
-    )
+    async def publish_order_list_update(self) -> bool:
+        """Publish a general order list update event.
 
+        Used when a new order is created or an order is deleted.
+        """
+        return await self._publish(
+            topics="orders",
+            data='{"type": "list_update"}',
+        )
 
-async def publish_order_list_update() -> bool:
-    """
-    Publish a general order list update event.
+    async def publish_image_update(
+        self,
+        order_number: str,
+        image_id: int,
+    ) -> bool:
+        """Publish a general update event for a specific image.
 
-    Used when a new order is created or an order is deleted.
-    """
-    return await _publish_to_mercure(
-        topics="orders",
-        data='{"type": "list_update"}',
-    )
+        Used when image metadata changes (e.g., selection changes) to notify
+        clients to refetch the image data.
 
+        Args:
+            order_number: The Shopify order number (with or without "#" prefix)
+            image_id: Database ID of the Image record
 
-async def publish_image_update(
-    order_number: str,
-    image_id: int,
-) -> bool:
-    """
-    Publish a general update event for a specific image.
+        Returns:
+            True if published successfully, False otherwise
+        """
+        clean_order_number = order_number.lstrip("#")
 
-    Used when image metadata changes (e.g., selection changes) to notify
-    clients to refetch the image data.
+        data = json.dumps(
+            {
+                "type": "image_update",
+                "order_number": clean_order_number,
+                "image_id": image_id,
+            }
+        )
 
-    Args:
-        order_number: The Shopify order number (with or without "#" prefix)
-        image_id: Database ID of the Image record
+        return await self._publish(
+            topics=["orders", f"orders/{clean_order_number}"],
+            data=data,
+            context={
+                "order_number": clean_order_number,
+                "image_id": image_id,
+            },
+        )
 
-    Returns:
-        True if published successfully, False otherwise
-    """
-    clean_order_number = order_number.lstrip("#")
+    async def publish_image_status(
+        self,
+        order_number: str,
+        image_id: int,
+        status_type: Literal["coloring", "svg"],
+        version_id: int,
+        status: str,
+    ) -> bool:
+        """Publish a granular status update for a specific image.
 
-    data = json.dumps(
-        {
-            "type": "image_update",
-            "order_number": clean_order_number,
-            "image_id": image_id,
-        }
-    )
+        This is used during processing to notify clients of status changes
+        without requiring a full order refetch. Clients should fetch only
+        the updated image data.
 
-    return await _publish_to_mercure(
-        topics=["orders", f"orders/{clean_order_number}"],
-        data=data,
-        context={
-            "order_number": clean_order_number,
-            "image_id": image_id,
-        },
-    )
+        Args:
+            order_number: The Shopify order number (with or without "#" prefix)
+            image_id: Database ID of the Image record
+            status_type: Either "coloring" or "svg"
+            version_id: Database ID of ColoringVersion or SvgVersion
+            status: The new status value
 
+        Returns:
+            True if published successfully, False otherwise
+        """
+        clean_order_number = order_number.lstrip("#")
 
-async def publish_image_status(
-    order_number: str,
-    image_id: int,
-    status_type: Literal["coloring", "svg"],
-    version_id: int,
-    status: str,
-) -> bool:
-    """
-    Publish a granular status update for a specific image.
+        data = json.dumps(
+            {
+                "type": "image_status",
+                "order_number": clean_order_number,
+                "image_id": image_id,
+                "status_type": status_type,
+                "version_id": version_id,
+                "status": status,
+            }
+        )
 
-    This is used during processing to notify clients of status changes
-    without requiring a full order refetch. Clients should fetch only
-    the updated image data.
-
-    Args:
-        order_number: The Shopify order number (with or without "#" prefix)
-        image_id: Database ID of the Image record
-        status_type: Either "coloring" or "svg"
-        version_id: Database ID of ColoringVersion or SvgVersion
-        status: The new status value
-
-    Returns:
-        True if published successfully, False otherwise
-    """
-    clean_order_number = order_number.lstrip("#")
-
-    data = json.dumps(
-        {
-            "type": "image_status",
-            "order_number": clean_order_number,
-            "image_id": image_id,
-            "status_type": status_type,
-            "version_id": version_id,
-            "status": status,
-        }
-    )
-
-    return await _publish_to_mercure(
-        topics=["orders", f"orders/{clean_order_number}"],
-        data=data,
-        context={
-            "order_number": clean_order_number,
-            "image_id": image_id,
-            "status_type": status_type,
-            "version_id": version_id,
-            "status": status,
-        },
-    )
+        return await self._publish(
+            topics=["orders", f"orders/{clean_order_number}"],
+            data=data,
+            context={
+                "order_number": clean_order_number,
+                "image_id": image_id,
+                "status_type": status_type,
+                "version_id": version_id,
+                "status": status,
+            },
+        )

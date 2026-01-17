@@ -1,36 +1,49 @@
 """Coloring book generation background task."""
 
 import asyncio
-from pathlib import Path
 
-import anyio
 import dramatiq
 import structlog
 
-from app.config import settings
 from app.models.enums import ColoringProcessingStatus
 from app.services.coloring.coloring_service import ColoringService
-from app.services.external.runpod import RunPodError, poll_job, submit_job
+from app.services.external.mercure import MercureService
+from app.services.external.runpod import RunPodError, RunPodService
+from app.services.storage.storage_service import LocalStorageService, StorageService
 from app.tasks.decorators import task_recover
 from app.tasks.utils import task_db_session
 
 logger = structlog.get_logger(__name__)
 
 
-def _get_coloring_path(order_id: int, line_item_id: int, position: int, version: int) -> Path:
-    """Generate storage path for a coloring version.
+@task_recover(ColoringService.get_incomplete_versions)
+@dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
+def generate_coloring(coloring_version_id: int) -> None:
+    """Generate a coloring book version for an image.
 
-    Path format: <storage_path>/<order_id>/<line_item_id>/coloring/v<version>/image_<position>.png
+    This task:
+    1. Sets status to PROCESSING immediately
+    2. Loads the ColoringVersion and associated Image
+    3. Submits to RunPod API (RUNPOD_SUBMITTING -> RUNPOD_SUBMITTED)
+    4. Polls for completion (RUNPOD_QUEUED -> RUNPOD_PROCESSING)
+    5. Saves output and updates status to COMPLETED
+    6. Sets as selected coloring version for the image
+    7. Publishes Mercure updates at each status change
+
+    Args:
+        coloring_version_id: ID of the ColoringVersion record to process
     """
-    base = Path(settings.storage_path)
-    return base / str(order_id) / str(line_item_id) / "coloring" / f"v{version}" / f"image_{position}.png"
+    asyncio.run(_generate_coloring_async(coloring_version_id))
 
 
 async def _generate_coloring_async(coloring_version_id: int) -> None:
     """Async implementation of coloring generation."""
     from app.models.coloring import ColoringVersion
     from app.models.order import Image, LineItem, Order
-    from app.services.external.mercure import publish_image_status
+
+    mercure = MercureService()
+    runpod = RunPodService()
+    storage: StorageService = LocalStorageService()
 
     logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
 
@@ -70,7 +83,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
         order_number = order.clean_order_number if order else str(order_id)
 
         # Publish initial PROCESSING status
-        await publish_image_status(
+        await mercure.publish_image_status(
             order_number=order_number,
             image_id=image_id,
             status_type="coloring",
@@ -82,7 +95,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             """Helper to update status in DB and publish to Mercure."""
             coloring_version.status = new_status
             await session.commit()
-            await publish_image_status(
+            await mercure.publish_image_status(
                 order_number=order_number,
                 image_id=image_id,
                 status_type="coloring",
@@ -95,26 +108,25 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             if not image.local_path:
                 raise FileNotFoundError("Image not downloaded yet")
 
-            input_path = Path(image.local_path)
-            if not input_path.exists():
-                raise FileNotFoundError(f"Image file not found: {input_path}")
+            # Read input image using storage service
+            if not await storage.exists_by_path(image.local_path):
+                raise FileNotFoundError(f"Image file not found: {image.local_path}")
 
-            # Generate output path
-            output_path = _get_coloring_path(
+            image_data = await storage.read_by_path(image.local_path)
+
+            # Generate storage key for output
+            output_key = storage.get_coloring_key(
                 order_id=order_id,
                 line_item_id=image.line_item_id,
                 position=image.position,
                 version=coloring_version.version,
             )
 
-            # Read input image
-            image_data = await anyio.Path(input_path).read_bytes()
-
             # Update status: RUNPOD_SUBMITTING
             await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTING)
 
             # Submit to RunPod
-            job_id = await submit_job(
+            job_id = await runpod.submit_job(
                 image_data=image_data,
                 megapixels=coloring_version.megapixels,
                 steps=coloring_version.steps,
@@ -132,14 +144,13 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
                     await update_status(ColoringProcessingStatus.RUNPOD_PROCESSING)
 
             # Poll for completion with status callbacks
-            result_data = await poll_job(job_id, on_status_change=on_runpod_status_change)
+            result_data = await runpod.poll_job(job_id, on_status_change=on_runpod_status_change)
 
-            # Create output directory and save result (async)
-            await anyio.Path(output_path.parent).mkdir(parents=True, exist_ok=True)
-            await anyio.Path(output_path).write_bytes(result_data)
+            # Save result using storage service
+            output_path = await storage.write(output_key, result_data)
 
             # Update version record
-            coloring_version.file_path = str(output_path)
+            coloring_version.file_path = output_path
             coloring_version.status = ColoringProcessingStatus.COMPLETED
 
             # Set as selected version for the image
@@ -148,7 +159,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             await session.commit()
 
             # Publish image_status for COMPLETED
-            await publish_image_status(
+            await mercure.publish_image_status(
                 order_number=order_number,
                 image_id=image_id,
                 status_type="coloring",
@@ -159,7 +170,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             logger.info(
                 "Coloring generation completed",
                 coloring_version_id=coloring_version_id,
-                output_path=str(output_path),
+                output_path=output_path,
             )
 
         except (RunPodError, FileNotFoundError, OSError) as e:
@@ -171,7 +182,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             coloring_version.status = ColoringProcessingStatus.ERROR
             await session.commit()
             # Publish image_status for ERROR
-            await publish_image_status(
+            await mercure.publish_image_status(
                 order_number=order_number,
                 image_id=image_id,
                 status_type="coloring",
@@ -179,24 +190,3 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
                 status=ColoringProcessingStatus.ERROR,
             )
             raise
-
-
-@task_recover(ColoringService.get_incomplete_versions)
-@dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
-def generate_coloring(coloring_version_id: int) -> None:
-    """
-    Generate a coloring book version for an image.
-
-    This task:
-    1. Sets status to PROCESSING immediately
-    2. Loads the ColoringVersion and associated Image
-    3. Submits to RunPod API (RUNPOD_SUBMITTING → RUNPOD_SUBMITTED)
-    4. Polls for completion (RUNPOD_QUEUED → RUNPOD_PROCESSING)
-    5. Saves output and updates status to COMPLETED
-    6. Sets as selected coloring version for the image
-    7. Publishes Mercure updates at each status change
-
-    Args:
-        coloring_version_id: ID of the ColoringVersion record to process
-    """
-    asyncio.run(_generate_coloring_async(coloring_version_id))

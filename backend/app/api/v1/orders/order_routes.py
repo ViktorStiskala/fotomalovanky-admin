@@ -11,8 +11,8 @@ from app.api.v1.orders.schemas import (
     StatusResponse,
 )
 from app.services.orders.exceptions import OrderNotFound
-from app.tasks.fetch_shopify import fetch_orders_from_shopify
-from app.tasks.order_ingestion import ingest_order
+from app.tasks.orders.fetch_shopify import fetch_orders_from_shopify
+from app.tasks.orders.order_ingestion import ingest_order
 
 logger = structlog.get_logger(__name__)
 

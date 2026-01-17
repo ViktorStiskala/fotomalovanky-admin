@@ -31,8 +31,8 @@ dramatiq.set_broker(redis_broker)
 
 # Import all tasks to register them with Dramatiq (must be after broker setup)
 # These imports are required for task discovery, not for re-export
-import app.tasks.fetch_shopify  # noqa: E402, F401
-import app.tasks.image_download  # noqa: E402, F401
-import app.tasks.order_ingestion  # noqa: E402, F401
-import app.tasks.process.generate_coloring  # noqa: E402, F401
-import app.tasks.process.vectorize_image  # noqa: E402, F401
+import app.tasks.orders.fetch_shopify  # noqa: E402, F401
+import app.tasks.orders.image_download  # noqa: E402, F401
+import app.tasks.orders.order_ingestion  # noqa: E402, F401
+import app.tasks.coloring.generate_coloring  # noqa: E402, F401
+import app.tasks.coloring.vectorize_image  # noqa: E402, F401

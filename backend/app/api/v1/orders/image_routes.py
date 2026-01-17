@@ -3,7 +3,7 @@
 import structlog
 from fastapi import APIRouter, HTTPException
 
-from app.api.v1.orders.dependencies import ImageServiceDep
+from app.api.v1.orders.dependencies import ImageServiceDep, MercureServiceDep
 from app.api.v1.orders.schemas import (
     ColoringVersionResponse,
     ImageResponse,
@@ -15,7 +15,6 @@ from app.services.coloring.exceptions import (
     SvgVersionNotFound,
     VersionOwnershipError,
 )
-from app.services.external.mercure import publish_image_update
 from app.services.orders.exceptions import (
     ImageNotFound,
     ImageNotFoundInOrder,
@@ -72,6 +71,7 @@ async def select_coloring_version(
     image_id: int,
     version_id: int,
     service: ImageServiceDep,
+    mercure: MercureServiceDep,
 ) -> StatusResponse:
     """Select a coloring version as the default for an image."""
     try:
@@ -83,7 +83,7 @@ async def select_coloring_version(
             image_id=image_id,
             order_number=image.clean_order_number,
         )
-        await publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.clean_order_number, image_id)
 
         return StatusResponse(status="ok", message=f"Selected coloring version {version_id}")
     except ImageNotFound:
@@ -99,6 +99,7 @@ async def select_svg_version(
     image_id: int,
     version_id: int,
     service: ImageServiceDep,
+    mercure: MercureServiceDep,
 ) -> StatusResponse:
     """Select an SVG version as the default for an image."""
     try:
@@ -110,7 +111,7 @@ async def select_svg_version(
             image_id=image_id,
             order_number=image.clean_order_number,
         )
-        await publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.clean_order_number, image_id)
 
         return StatusResponse(status="ok", message=f"Selected SVG version {version_id}")
     except ImageNotFound:

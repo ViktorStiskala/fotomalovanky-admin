@@ -22,17 +22,23 @@ app/services/
 ├── orders/                    # Domain: order management
 │   ├── exceptions.py          # OrderNotFound, ImageNotFound, etc.
 │   ├── order_service.py
-│   └── image_service.py
+│   ├── image_service.py
+│   ├── image_download_service.py  # Image download with tenacity retries
+│   └── shopify_sync_service.py    # Shopify order sync logic
 ├── coloring/                  # Domain: image processing
 │   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
 │   ├── coloring_service.py
 │   └── vectorizer_service.py
-└── external/                  # Third-party integrations
-    ├── mercure.py
-    ├── runpod.py
-    ├── shopify.py
-    └── vectorizer.py
+├── storage/                   # File storage abstraction
+│   └── storage_service.py     # StorageService ABC + LocalStorageService
+└── external/                  # Third-party API clients (all classes)
+    ├── mercure.py             # MercureService
+    ├── runpod.py              # RunPodService
+    ├── shopify.py             # ShopifyService
+    └── vectorizer.py          # VectorizerApiService
 ```
+
+**ALL services MUST be classes.** No function-based services are allowed.
 
 ### Service Class Pattern
 
@@ -91,7 +97,29 @@ def generate_coloring(version_id: int) -> None:
 
 - **NEVER** call external APIs from FastAPI workers (Shopify, RunPod, Vectorizer)
 - **ALL** external API calls MUST happen in Dramatiq tasks
-- Services contain the API call logic, tasks handle orchestration and error handling
+- External services are classes that handle API calls (e.g., `RunPodService`, `VectorizerApiService`)
+- Tasks instantiate services and handle orchestration and error handling
+
+### Tasks Folder Structure
+
+Tasks are organized to mirror the services structure:
+
+```
+app/tasks/
+├── __init__.py
+├── decorators.py        # @task_recover decorator
+├── recovery.py          # Task recovery utilities
+├── utils.py             # task_db_session context manager
+├── orders/              # mirrors services/orders/
+│   ├── __init__.py
+│   ├── fetch_shopify.py       # Batch fetch orders
+│   ├── image_download.py      # Download order images
+│   └── order_ingestion.py     # Ingest single order
+└── coloring/            # mirrors services/coloring/
+    ├── __init__.py
+    ├── generate_coloring.py   # Generate coloring via RunPod
+    └── vectorize_image.py     # Convert to SVG via Vectorizer.ai
+```
 
 ## Import Rules (MANDATORY)
 
@@ -109,13 +137,18 @@ def generate_coloring(version_id: int) -> None:
 from app.services import ColoringService
 from app.utils import normalize_order_number
 
-# BAD - importing from re-export wrapper
-from app.services.mercure import publish_order_update
-
 # GOOD - explicit imports from actual modules
 from app.services.coloring.coloring_service import ColoringService
 from app.utils.shopify_helpers import normalize_order_number
-from app.services.external.mercure import publish_order_update
+from app.services.external.mercure import MercureService
+from app.services.storage.storage_service import LocalStorageService
+
+# Using external services (always instantiate as classes)
+mercure = MercureService()
+await mercure.publish_order_update(order_number)
+
+storage = LocalStorageService()
+file_path = await storage.write(key, data)
 ```
 
 ## Custom Exceptions (MANDATORY)

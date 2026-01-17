@@ -36,10 +36,11 @@ alwaysApply: true
     - `download_order_images` task - downloads images in parallel with `asyncio.gather`
     - Use `tenacity` for per-operation retries with exponential backoff
 - **Real-time:** Publish events to **Mercure** hub for SSE push to frontend.
-- **Shopify API:** Use `ariadne-codegen` generated typed client in `app/services/shopify_client/`.
+- **Shopify API:** Use `ariadne-codegen` generated typed client in `app/services/external/shopify_client/`.
     - GraphQL queries are defined in `app/graphql/queries/`
     - Run `uv run codegen` after modifying queries to regenerate the client
     - Generated code is excluded from ruff and mypy checks
+    - Use `ShopifyService` class for API calls
 - **Utilities:** Common helpers in `app/utils/`:
     - `datetime_utils.py` - timezone conversions (`to_api_timezone`)
     - `shopify_helpers.py` - `build_customer_name()`, `normalize_order_number()`
@@ -76,11 +77,17 @@ alwaysApply: true
 
 ## Real-time Updates (Ping-to-Refetch Pattern)
 - **DO NOT** send full data payloads via SSE
-- **MUST** emit Mercure events on **every** state change:
-    - New order created (webhook, manual fetch) → `publish_order_list_update()`
-    - Order status changed → `publish_order_update(order_number)`
-    - Images downloaded/updated → `publish_order_update(order_number)`
+- **MUST** emit Mercure events on **every** state change using `MercureService`:
+    - New order created (webhook, manual fetch) → `mercure.publish_order_list_update()`
+    - Order status changed → `mercure.publish_order_update(order_number)`
+    - Images downloaded/updated → `mercure.publish_order_update(order_number)`
     - Any data modification visible to users → appropriate Mercure publish
+- **Usage:**
+    ```python
+    from app.services.external.mercure import MercureService
+    mercure = MercureService()
+    await mercure.publish_order_update(order_number)
+    ```
 - **Pattern:**
     1. Backend updates PostgreSQL
     2. Backend posts lightweight ping to Mercure topic:

@@ -61,6 +61,7 @@
 			"**/.docker/**": false,
 			"**/.cursor/**": false,
 			"**/.dockerignore": false,
+			"**/*.mdc": false,
 		},
 		"cursor.general.globalCursorIgnoreList": [
 			"**/.env",
