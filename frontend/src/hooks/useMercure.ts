@@ -4,6 +4,7 @@ import { MERCURE_URL } from "@/lib/config";
 // Track all active EventSource instances to close them on page unload
 const activeConnections = new Set<EventSource>();
 let isPageUnloading = false;
+let isPageHidden = false;
 
 // Set up unload detection once - close all connections before browser interrupts them
 if (typeof window !== "undefined") {
@@ -21,6 +22,36 @@ if (typeof window !== "undefined") {
   window.addEventListener("pageshow", () => {
     isPageUnloading = false;
   });
+  // Track page visibility for error classification
+  document.addEventListener("visibilitychange", () => {
+    isPageHidden = document.hidden;
+  });
+}
+
+/**
+ * Determines if an SSE error should be reported to error tracking (e.g., Sentry).
+ *
+ * Returns false for "expected" errors that occur during normal browser behavior:
+ * - Page unload/navigation
+ * - Tab switching (page hidden)
+ * - Intentional connection close
+ * - Network going offline temporarily
+ *
+ * These are NOT bugs and should not create noise in error tracking.
+ */
+function isReportableSSEError(isClosing: boolean): boolean {
+  // Never report if we're intentionally closing or page is unloading
+  if (isClosing || isPageUnloading) return false;
+
+  // Don't report errors when page is hidden (tab switched, minimized)
+  // Browser may throttle/disconnect SSE connections for hidden tabs
+  if (isPageHidden) return false;
+
+  // Don't report if browser is offline - this is expected behavior
+  if (typeof navigator !== "undefined" && !navigator.onLine) return false;
+
+  // This is potentially a real error worth reporting
+  return true;
 }
 
 /**
@@ -70,16 +101,47 @@ export function useMercure(
       eventSource.onmessage = (event: MessageEvent) => {
         if (isClosing || isPageUnloading) return;
         try {
-          const data: unknown = JSON.parse(event.data);
+          const data: unknown = JSON.parse(event.data as string);
           onMessageRef.current(data);
         } catch (error) {
-          console.error("[Mercure] Failed to parse event:", error);
+          // JSON parse errors ARE bugs and should always be reported
+          console.error("[Mercure] Failed to parse event:", {
+            topic,
+            error,
+            rawData: event.data,
+          });
+
+          // Future Sentry integration example:
+          // Sentry.captureException(error, {
+          //   tags: { topic },
+          //   extra: { rawData: event.data },
+          // });
         }
       };
 
-      eventSource.onerror = () => {
-        // Ignore errors when intentionally closing or page unloading
-        if (isClosing || isPageUnloading) return;
+      eventSource.onerror = (event: Event) => {
+        // Only log/report errors that indicate real problems
+        if (isReportableSSEError(isClosing)) {
+          // Structured error info for future Sentry integration
+          const errorContext = {
+            topic,
+            readyState: eventSource?.readyState,
+            // EventSource readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
+            readyStateLabel: ["CONNECTING", "OPEN", "CLOSED"][eventSource?.readyState ?? 2],
+            isOnline: navigator.onLine,
+            visibilityState: document.visibilityState,
+          };
+
+          // Log with context - in future, this would go to Sentry
+          console.warn("[Mercure] Connection error (will auto-reconnect)", errorContext, event);
+
+          // Future Sentry integration example:
+          // Sentry.captureMessage("Mercure SSE connection error", {
+          //   level: "warning",
+          //   tags: { topic },
+          //   extra: errorContext,
+          // });
+        }
         // EventSource will automatically try to reconnect
       };
 

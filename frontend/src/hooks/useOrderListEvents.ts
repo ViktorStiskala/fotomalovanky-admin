@@ -42,7 +42,7 @@ export function useOrderListEvents(): void {
     // If it's an update to a specific order, also invalidate that order's query
     if (event.type === "order_update") {
       queryClient.invalidateQueries({
-        queryKey: getGetOrderQueryKey(event.shopify_id),
+        queryKey: getGetOrderQueryKey(event.order_id),
       });
     }
   }, []);

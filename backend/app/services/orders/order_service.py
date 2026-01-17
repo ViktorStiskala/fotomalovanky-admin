@@ -60,7 +60,34 @@ class OrderService:
 
         return orders, total
 
-    async def get_order(self, shopify_id: int) -> Order:
+    async def get_order(self, order_id: str) -> Order:
+        """Get order by ID (ULID) with full eager loading."""
+        statement = (
+            select(Order)
+            .options(
+                selectinload(Order.line_items)  # type: ignore[arg-type]
+                .selectinload(LineItem.images)  # type: ignore[arg-type]
+                .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
+                .selectinload(ColoringVersion.svg_versions)  # type: ignore[arg-type]
+            )
+            .where(Order.id == order_id)
+        )
+        result = await self.session.execute(statement)
+        order = result.scalars().first()
+        if not order:
+            raise OrderNotFound()
+        return order
+
+    async def get_order_basic(self, order_id: str) -> Order:
+        """Get order by ID (ULID) without eager loading (for simple checks)."""
+        statement = select(Order).where(Order.id == order_id)
+        result = await self.session.execute(statement)
+        order = result.scalars().first()
+        if not order:
+            raise OrderNotFound()
+        return order
+
+    async def get_order_by_shopify_id(self, shopify_id: int) -> Order:
         """Get order by Shopify ID with full eager loading."""
         statement = (
             select(Order)
@@ -78,21 +105,12 @@ class OrderService:
             raise OrderNotFound()
         return order
 
-    async def get_order_basic(self, shopify_id: int) -> Order:
-        """Get order by Shopify ID without eager loading (for simple checks)."""
-        statement = select(Order).where(Order.shopify_id == shopify_id)
-        result = await self.session.execute(statement)
-        order = result.scalars().first()
-        if not order:
-            raise OrderNotFound()
-        return order
-
-    async def prepare_sync(self, shopify_id: int) -> Order:
+    async def prepare_sync(self, order_id: str) -> Order:
         """Reset order status for re-processing.
 
         Returns the updated order. Caller is responsible for dispatching the task.
         """
-        statement = select(Order).where(Order.shopify_id == shopify_id)
+        statement = select(Order).where(Order.id == order_id)
         result = await self.session.execute(statement)
         order = result.scalars().first()
         if not order:
@@ -157,7 +175,9 @@ class OrderService:
             shopify_created_at = shopify_created_at.astimezone(UTC)
 
         # Create new order
+        # For Shopify orders, order_number = shopify_order_number
         order = Order(
+            order_number=shopify_order.name,  # Display value (e.g., "#1270")
             shopify_id=shopify_id,
             shopify_order_number=shopify_order.name,
             customer_email=shopify_order.email,
@@ -214,8 +234,8 @@ class OrderService:
 
         for li in order.line_items:
             for img in li.images:
-                if not img.local_path:
-                    logger.info("Order has undownloaded images, re-queuing", order_id=order.id, image_id=img.id)
+                if not img.file_ref:
+                    logger.info("Order has unuploaded images, re-queuing", order_id=order.id, image_id=img.id)
                     return True
 
         return False

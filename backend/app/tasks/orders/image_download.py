@@ -11,7 +11,7 @@ from app.models.enums import OrderStatus
 from app.models.order import LineItem, Order
 from app.services.external.mercure import MercureService
 from app.services.orders.image_download_service import ImageDownloadService
-from app.services.storage.storage_service import LocalStorageService
+from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
 from app.tasks.utils import task_db_session
 
@@ -20,7 +20,7 @@ logger = structlog.get_logger(__name__)
 
 @task_recover(ImageDownloadService.get_incomplete_downloads)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
-def download_order_images(order_id: int) -> None:
+def download_order_images(order_id: str) -> None:
     """Download all images for an order in parallel.
 
     This task:
@@ -36,12 +36,12 @@ def download_order_images(order_id: int) -> None:
     asyncio.run(_download_order_images_async(order_id))
 
 
-async def _download_order_images_async(order_id: int) -> None:
+async def _download_order_images_async(order_id: str) -> None:
     """Async implementation of image downloading."""
     mercure = MercureService()
-    storage = LocalStorageService()
+    storage = S3StorageService()
 
-    logger.info("Starting image download task", internal_order_id=order_id)
+    logger.info("Starting image download task", order_id=order_id)
 
     async with task_db_session() as session:
         # Get order from database with line items and images
@@ -54,18 +54,16 @@ async def _download_order_images_async(order_id: int) -> None:
         order = result.scalars().first()
 
         if not order:
-            logger.error("Order not found", internal_order_id=order_id)
+            logger.error("Order not found", order_id=order_id)
             return
 
-        assert order.id is not None, "Order ID cannot be None after database fetch"
-        shopify_id = order.shopify_id
-        logger.info("Downloading images for order", shopify_id=shopify_id)
+        logger.info("Downloading images for order", order_id=order_id, order_number=order.order_number)
 
         try:
             # Update status to DOWNLOADING
             order.status = OrderStatus.DOWNLOADING
             await session.commit()
-            await mercure.publish_order_update(shopify_id)
+            await mercure.publish_order_update(order_id)
 
             # Use ImageDownloadService for downloads
             download_service = ImageDownloadService(session, storage)
@@ -83,11 +81,11 @@ async def _download_order_images_async(order_id: int) -> None:
                 order.status = OrderStatus.READY_FOR_REVIEW
 
             await session.commit()
-            await mercure.publish_order_update(shopify_id)
+            await mercure.publish_order_update(order_id)
 
             logger.info(
                 "Image download task complete",
-                shopify_id=shopify_id,
+                order_id=order_id,
                 status=order.status.value,
                 total=download_result.total,
                 succeeded=download_result.succeeded,
@@ -95,8 +93,8 @@ async def _download_order_images_async(order_id: int) -> None:
             )
 
         except Exception as e:
-            logger.error("Image download task failed", shopify_id=shopify_id, error=str(e))
+            logger.error("Image download task failed", order_id=order_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await mercure.publish_order_update(shopify_id)
+            await mercure.publish_order_update(order_id)
             raise

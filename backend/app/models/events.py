@@ -9,7 +9,7 @@ class OrderUpdateEvent(BaseModel):
     """Event sent when an order is updated."""
 
     type: Literal["order_update"]
-    shopify_id: int
+    order_id: str  # ULID
 
 
 class ListUpdateEvent(BaseModel):
@@ -22,7 +22,7 @@ class ImageUpdateEvent(BaseModel):
     """Event sent when image metadata changes (e.g., selection)."""
 
     type: Literal["image_update"]
-    shopify_id: int
+    order_id: str  # ULID
     image_id: int
 
 
@@ -30,7 +30,7 @@ class ImageStatusEvent(BaseModel):
     """Event sent during image processing status changes."""
 
     type: Literal["image_status"]
-    shopify_id: int
+    order_id: str  # ULID
     image_id: int
     status_type: Literal["coloring", "svg"]
     version_id: int

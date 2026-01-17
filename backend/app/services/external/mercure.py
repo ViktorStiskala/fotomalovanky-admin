@@ -43,7 +43,7 @@ class MercureService:
         Args:
             topics: Topic(s) to publish to (string or list of strings)
             data: JSON data to publish
-            context: Optional context for logging (e.g., shopify_id)
+            context: Optional context for logging (e.g., order_id)
 
         Returns:
             True if published successfully, False otherwise
@@ -87,7 +87,7 @@ class MercureService:
                 )
                 return False
 
-    async def publish_order_update(self, shopify_id: int) -> bool:
+    async def publish_order_update(self, order_id: str) -> bool:
         """Publish an order update event to Mercure.
 
         This sends a lightweight "ping" to notify connected clients
@@ -95,17 +95,17 @@ class MercureService:
         the order data from the API.
 
         Args:
-            shopify_id: The Shopify order ID (numeric)
+            order_id: The order ID (ULID string)
 
         Returns:
             True if published successfully, False otherwise
         """
-        event = OrderUpdateEvent(type="order_update", shopify_id=shopify_id)
+        event = OrderUpdateEvent(type="order_update", order_id=order_id)
 
         return await self._publish(
-            topics=["orders", f"orders/{shopify_id}"],
+            topics=["orders", f"orders/{order_id}"],
             data=event.model_dump_json(),
-            context={"shopify_id": shopify_id},
+            context={"order_id": order_id},
         )
 
     async def publish_order_list_update(self) -> bool:
@@ -121,7 +121,7 @@ class MercureService:
 
     async def publish_image_update(
         self,
-        shopify_id: int,
+        order_id: str,
         image_id: int,
     ) -> bool:
         """Publish a general update event for a specific image.
@@ -130,7 +130,7 @@ class MercureService:
         clients to refetch the image data.
 
         Args:
-            shopify_id: The Shopify order ID (numeric)
+            order_id: The order ID (ULID string)
             image_id: Database ID of the Image record
 
         Returns:
@@ -138,22 +138,22 @@ class MercureService:
         """
         event = ImageUpdateEvent(
             type="image_update",
-            shopify_id=shopify_id,
+            order_id=order_id,
             image_id=image_id,
         )
 
         return await self._publish(
-            topics=["orders", f"orders/{shopify_id}"],
+            topics=["orders", f"orders/{order_id}"],
             data=event.model_dump_json(),
             context={
-                "shopify_id": shopify_id,
+                "order_id": order_id,
                 "image_id": image_id,
             },
         )
 
     async def publish_image_status(
         self,
-        shopify_id: int,
+        order_id: str,
         image_id: int,
         status_type: Literal["coloring", "svg"],
         version_id: int,
@@ -166,7 +166,7 @@ class MercureService:
         the updated image data.
 
         Args:
-            shopify_id: The Shopify order ID (numeric)
+            order_id: The order ID (ULID string)
             image_id: Database ID of the Image record
             status_type: Either "coloring" or "svg"
             version_id: Database ID of ColoringVersion or SvgVersion
@@ -177,7 +177,7 @@ class MercureService:
         """
         event = ImageStatusEvent(
             type="image_status",
-            shopify_id=shopify_id,
+            order_id=order_id,
             image_id=image_id,
             status_type=status_type,
             version_id=version_id,
@@ -185,10 +185,10 @@ class MercureService:
         )
 
         return await self._publish(
-            topics=["orders", f"orders/{shopify_id}"],
+            topics=["orders", f"orders/{order_id}"],
             data=event.model_dump_json(),
             context={
-                "shopify_id": shopify_id,
+                "order_id": order_id,
                 "image_id": image_id,
                 "status_type": status_type,
                 "version_id": version_id,

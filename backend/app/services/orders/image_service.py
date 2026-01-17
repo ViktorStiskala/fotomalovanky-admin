@@ -24,10 +24,10 @@ class OrderImageService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_order_image(self, *, shopify_id: int, image_id: int) -> Image:
+    async def get_order_image(self, *, order_id: str, image_id: int) -> Image:
         """Get image with versions, verifying it belongs to the order."""
         # Verify order exists
-        order_statement = select(Order).where(Order.shopify_id == shopify_id)
+        order_statement = select(Order).where(Order.id == order_id)
         order_result = await self.session.execute(order_statement)
         order = order_result.scalars().first()
         if not order:

@@ -34,35 +34,34 @@ async def list_orders(
     )
 
 
-@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
+@router.get("/orders/{order_id}", response_model=OrderDetailResponse, operation_id="getOrder")
 async def get_order(
-    shopify_id: int,
+    order_id: str,
     service: OrderServiceDep,
 ) -> OrderDetailResponse:
-    """Get a single order with line items and images by Shopify order ID."""
+    """Get a single order with line items and images by order ID (ULID)."""
     try:
-        order = await service.get_order(shopify_id)
+        order = await service.get_order(order_id)
         return OrderDetailResponse.from_model(order)
     except OrderNotFound:
         raise HTTPException(status_code=404, detail="Order not found")
 
 
-@router.post("/orders/{shopify_id}/sync", response_model=StatusResponse, operation_id="syncOrder")
+@router.post("/orders/{order_id}/sync", response_model=StatusResponse, operation_id="syncOrder")
 async def sync_order(
-    shopify_id: int,
+    order_id: str,
     service: OrderServiceDep,
 ) -> StatusResponse:
     """Manually trigger a sync/re-processing of an order."""
     try:
-        order = await service.prepare_sync(shopify_id)
+        order = await service.prepare_sync(order_id)
 
         # Dispatch task after DB commit
-        assert order.id is not None
         ingest_order.send(order.id)
 
         return StatusResponse(
             status="queued",
-            message=f"Order {order.shopify_order_number} queued for sync",
+            message=f"Order {order.order_number} queued for sync",
         )
     except OrderNotFound:
         raise HTTPException(status_code=404, detail="Order not found")

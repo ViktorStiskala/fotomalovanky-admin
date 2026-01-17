@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.models.enums import OrderStatus
-from app.models.order import Image, LineItem, Order
+from app.models.order import LINE_ITEM_POSITION_CONSTRAINT, Image, LineItem, Order
+from app.models.utils.auto_increment import AutoIncrementOnConflict
 from app.services.external.shopify import ShopifyService
 
 if TYPE_CHECKING:
@@ -116,6 +117,10 @@ class ShopifySyncService:
         """
         assert order.id is not None, "Order ID cannot be None"
 
+        if order.shopify_id is None:
+            logger.error("Order has no shopify_id, cannot sync", order_id=order.id)
+            return SyncResult(success=False, has_images_to_download=False, error="Order has no Shopify ID")
+
         shopify_order = await self.shopify.get_order_details(order.shopify_id)
         if not shopify_order:
             logger.error("Failed to fetch order from Shopify", order_id=order.id)
@@ -207,7 +212,7 @@ class ShopifySyncService:
     async def _process_line_item(
         self,
         shopify_line_item: "GetOrderDetailsOrderLineItemsEdgesNode",
-        order_id: int,
+        order_id: str,
     ) -> bool:
         """Process a single line item and its images.
 
@@ -231,16 +236,30 @@ class ShopifySyncService:
         line_item = existing_result.scalars().first()
 
         if not line_item:
-            line_item = LineItem(
-                order_id=order_id,
-                shopify_line_item_id=shopify_line_item_id,
-                title=shopify_line_item.title,
-                quantity=shopify_line_item.quantity,
-                dedication=attrs.get("Věnování"),
-                layout=attrs.get("Rozvržení"),
-            )
-            self.session.add(line_item)
-            await self.session.flush()
+            # Use AutoIncrementOnConflict for position
+            new_line_item: LineItem | None = None
+            async for attempt in AutoIncrementOnConflict(
+                session=self.session,
+                model_class=LineItem,
+                increment_column=LineItem.position,
+                filter_columns={LineItem.order_id: order_id},
+                constraint=LINE_ITEM_POSITION_CONSTRAINT,
+            ):
+                async with attempt:
+                    new_line_item = LineItem(
+                        order_id=order_id,
+                        position=attempt.value,
+                        shopify_line_item_id=shopify_line_item_id,
+                        title=shopify_line_item.title,
+                        quantity=shopify_line_item.quantity,
+                        dedication=attrs.get("Věnování"),
+                        layout=attrs.get("Rozvržení"),
+                    )
+                    self.session.add(new_line_item)
+                    await self.session.flush()
+            # AutoIncrementOnConflict guarantees success or raises
+            assert new_line_item is not None
+            line_item = new_line_item
             logger.info("Created line item", line_item_id=line_item.id, shopify_line_item_id=shopify_line_item_id)
 
         assert line_item.id is not None, "LineItem ID cannot be None after flush"
@@ -270,13 +289,13 @@ class ShopifySyncService:
                 await self.session.flush()
                 has_images_to_download = True
                 logger.info("Created image record", image_id=image.id, position=position, url=url[:50] + "...")
-            elif not image.local_path:
+            elif not image.file_ref:
                 has_images_to_download = True
 
         return has_images_to_download
 
     @staticmethod
-    async def get_incomplete_ingestions(session: AsyncSession) -> list[int]:
+    async def get_incomplete_ingestions(session: AsyncSession) -> list[str]:
         """Get order IDs with incomplete ingestion.
 
         This is used by the task recovery decorator to find orders
@@ -286,7 +305,7 @@ class ShopifySyncService:
             session: Database session
 
         Returns:
-            List of order IDs in PROCESSING state
+            List of order IDs (ULIDs) in PROCESSING state
         """
         statement = select(Order.id).where(Order.status == OrderStatus.PROCESSING)
         result = await session.execute(statement)

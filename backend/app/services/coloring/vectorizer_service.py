@@ -94,7 +94,7 @@ class VectorizerService:
 
     async def create_versions_for_order(
         self,
-        shopify_id: int,
+        order_id: str,
         *,
         shape_stacking: str = "stacked",
         group_by: str = "color",
@@ -112,7 +112,7 @@ class VectorizerService:
                 .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
                 .selectinload(ColoringVersion.svg_versions)  # type: ignore[arg-type]
             )
-            .where(Order.shopify_id == shopify_id)
+            .where(Order.id == order_id)
         )
         result = await self.session.execute(statement)
         order = result.scalars().first()
@@ -167,7 +167,7 @@ class VectorizerService:
 
         logger.info(
             "Created SVG versions for order",
-            shopify_id=shopify_id,
+            order_id=order_id,
             count=len(version_ids),
         )
 

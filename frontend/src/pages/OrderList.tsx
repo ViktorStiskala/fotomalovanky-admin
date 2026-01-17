@@ -124,10 +124,10 @@ export default function OrderList() {
                 <tr key={order.id} className="border-t hover:bg-muted/50">
                   <td className="p-3">
                     <Link
-                      to={`/orders/${order.shopify_id}`}
+                      to={`/orders/${order.id}`}
                       className="text-primary underline hover:no-underline"
                     >
-                      {order.shopify_order_number}
+                      {order.order_number}
                     </Link>
                   </td>
                   <td className="p-3 text-muted-foreground">{formattedDate}</td>
@@ -151,15 +151,17 @@ export default function OrderList() {
                     </span>
                   </td>
                   <td className="p-3">
-                    <Button variant="outline" size="sm" asChild>
-                      <a
-                        href={getShopifyOrderUrl(order.shopify_id)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        Otevřít ve Shopify
-                      </a>
-                    </Button>
+                    {order.shopify_id && (
+                      <Button variant="outline" size="sm" asChild>
+                        <a
+                          href={getShopifyOrderUrl(order.shopify_id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Otevřít ve Shopify
+                        </a>
+                      </Button>
+                    )}
                   </td>
                 </tr>
               );

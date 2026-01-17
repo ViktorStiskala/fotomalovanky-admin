@@ -9,7 +9,8 @@ from app.models.enums import ColoringProcessingStatus
 from app.services.coloring.coloring_service import ColoringService
 from app.services.external.mercure import MercureService
 from app.services.external.runpod import RunPodError, RunPodService
-from app.services.storage.storage_service import LocalStorageService, StorageService
+from app.services.storage.paths import OrderStoragePaths
+from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
 from app.tasks.utils import task_db_session
 
@@ -43,7 +44,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
 
     mercure = MercureService()
     runpod = RunPodService()
-    storage: StorageService = LocalStorageService()
+    storage = S3StorageService()
 
     logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
 
@@ -68,7 +69,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
         assert image.id is not None
         image_id = image.id  # Capture for closures
 
-        # Load line item and order to get shopify_id
+        # Load line item and order to get order_id
         line_item = await session.get(LineItem, image.line_item_id)
         if not line_item:
             logger.error("LineItem not found", line_item_id=image.line_item_id)
@@ -76,18 +77,20 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             await session.commit()
             return
 
-        # Get order for shopify_id (used for Mercure and storage paths)
+        # Get order for Mercure and storage paths
         order = await session.get(Order, line_item.order_id)
         if not order:
-            logger.error("Order not found", internal_order_id=line_item.order_id)
+            logger.error("Order not found", order_id=line_item.order_id)
             coloring_version.status = ColoringProcessingStatus.ERROR
             await session.commit()
             return
-        shopify_id = order.shopify_id
+
+        assert order.id is not None
+        order_id = order.id  # ULID string for Mercure
 
         # Publish initial PROCESSING status
         await mercure.publish_image_status(
-            shopify_id=shopify_id,
+            order_id=order_id,
             image_id=image_id,
             status_type="coloring",
             version_id=coloring_version_id,
@@ -99,7 +102,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             coloring_version.status = new_status
             await session.commit()
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="coloring",
                 version_id=coloring_version_id,
@@ -108,22 +111,15 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
 
         try:
             # Verify source image exists
-            if not image.local_path:
-                raise FileNotFoundError("Image not downloaded yet")
+            if not image.file_ref:
+                raise FileNotFoundError("Image not uploaded to S3 yet")
 
-            # Read input image using storage service
-            if not await storage.exists_by_path(image.local_path):
-                raise FileNotFoundError(f"Image file not found: {image.local_path}")
+            # Read input image from S3
+            image_data = await storage.download(image.file_ref)
 
-            image_data = await storage.read_by_path(image.local_path)
-
-            # Generate storage key for output
-            output_key = storage.get_coloring_key(
-                shopify_id=shopify_id,
-                line_item_id=image.line_item_id,
-                position=image.position,
-                version=coloring_version.version,
-            )
+            # Generate storage key for output using OrderStoragePaths
+            paths = OrderStoragePaths(order)
+            output_key = paths.coloring_version(line_item, image, coloring_version)
 
             # Update status: RUNPOD_SUBMITTING
             await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTING)
@@ -149,11 +145,15 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             # Poll for completion with status callbacks
             result_data = await runpod.poll_job(job_id, on_status_change=on_runpod_status_change)
 
-            # Save result using storage service
-            output_path = await storage.write(output_key, result_data)
+            # Upload result to S3
+            file_ref = await storage.upload(
+                upload_to=output_key,
+                data=result_data,
+                content_type="image/png",
+            )
 
             # Update version record
-            coloring_version.file_path = output_path
+            coloring_version.file_ref = file_ref
             coloring_version.status = ColoringProcessingStatus.COMPLETED
 
             # Set as selected version for the image
@@ -163,7 +163,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
 
             # Publish image_status for COMPLETED
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="coloring",
                 version_id=coloring_version_id,
@@ -173,7 +173,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             logger.info(
                 "Coloring generation completed",
                 coloring_version_id=coloring_version_id,
-                output_path=output_path,
+                s3_key=output_key,
             )
 
         except (RunPodError, FileNotFoundError, OSError) as e:
@@ -186,7 +186,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             await session.commit()
             # Publish image_status for ERROR
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="coloring",
                 version_id=coloring_version_id,

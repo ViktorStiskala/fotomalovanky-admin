@@ -13,7 +13,8 @@ from app.services.external.vectorizer import (
     VectorizerBadRequestError,
     VectorizerError,
 )
-from app.services.storage.storage_service import LocalStorageService, StorageService
+from app.services.storage.paths import OrderStoragePaths
+from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
 from app.tasks.utils import task_db_session
 
@@ -22,7 +23,7 @@ logger = structlog.get_logger(__name__)
 
 @task_recover(VectorizerService.get_incomplete_versions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000, throws=VectorizerBadRequestError)
-def vectorize_image(svg_version_id: int) -> None:
+def generate_svg(svg_version_id: int) -> None:
     """Vectorize a coloring book to SVG.
 
     This task:
@@ -37,17 +38,17 @@ def vectorize_image(svg_version_id: int) -> None:
     Args:
         svg_version_id: ID of the SvgVersion record to process
     """
-    asyncio.run(_vectorize_image_async(svg_version_id))
+    asyncio.run(_generate_svg_async(svg_version_id))
 
 
-async def _vectorize_image_async(svg_version_id: int) -> None:
+async def _generate_svg_async(svg_version_id: int) -> None:
     """Async implementation of SVG vectorization."""
     from app.models.coloring import ColoringVersion, SvgVersion
     from app.models.order import Image, LineItem, Order
 
     mercure = MercureService()
     vectorizer = VectorizerApiService()
-    storage: StorageService = LocalStorageService()
+    storage = S3StorageService()
 
     logger.info("Starting SVG vectorization", svg_version_id=svg_version_id)
 
@@ -83,7 +84,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
         assert image.id is not None
         image_id = image.id  # Capture for closures
 
-        # Load line item and order to get shopify_id
+        # Load line item and order to get order_id
         line_item = await session.get(LineItem, image.line_item_id)
         if not line_item:
             logger.error("LineItem not found", line_item_id=image.line_item_id)
@@ -91,18 +92,20 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             return
 
-        # Get order for shopify_id (used for Mercure and storage paths)
+        # Get order for Mercure and storage paths
         order = await session.get(Order, line_item.order_id)
         if not order:
-            logger.error("Order not found", internal_order_id=line_item.order_id)
+            logger.error("Order not found", order_id=line_item.order_id)
             svg_version.status = SvgProcessingStatus.ERROR
             await session.commit()
             return
-        shopify_id = order.shopify_id
+
+        assert order.id is not None
+        order_id = order.id  # ULID string for Mercure
 
         # Publish initial PROCESSING status
         await mercure.publish_image_status(
-            shopify_id=shopify_id,
+            order_id=order_id,
             image_id=image_id,
             status_type="svg",
             version_id=svg_version_id,
@@ -114,7 +117,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             svg_version.status = new_status
             await session.commit()
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -123,22 +126,15 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
 
         try:
             # Verify source coloring image exists
-            if not coloring_version.file_path:
-                raise FileNotFoundError("Coloring version has no file")
+            if not coloring_version.file_ref:
+                raise FileNotFoundError("Coloring version has no file in S3")
 
-            # Read input using storage service
-            if not await storage.exists_by_path(coloring_version.file_path):
-                raise FileNotFoundError(f"Coloring file not found: {coloring_version.file_path}")
+            # Download input from S3
+            image_data = await storage.download(coloring_version.file_ref)
 
-            image_data = await storage.read_by_path(coloring_version.file_path)
-
-            # Generate storage key for output
-            output_key = storage.get_svg_key(
-                shopify_id=shopify_id,
-                line_item_id=image.line_item_id,
-                position=image.position,
-                version=svg_version.version,
-            )
+            # Generate storage key for output using OrderStoragePaths
+            paths = OrderStoragePaths(order)
+            output_key = paths.svg_version(line_item, image, svg_version)
 
             # Update status: VECTORIZER_PROCESSING
             await update_status(SvgProcessingStatus.VECTORIZER_PROCESSING)
@@ -151,11 +147,15 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
                 group_by=svg_version.group_by,
             )
 
-            # Save result using storage service
-            output_path = await storage.write(output_key, svg_data)
+            # Upload result to S3
+            file_ref = await storage.upload(
+                upload_to=output_key,
+                data=svg_data,
+                content_type="image/svg+xml",
+            )
 
             # Update version record
-            svg_version.file_path = output_path
+            svg_version.file_ref = file_ref
             svg_version.status = SvgProcessingStatus.COMPLETED
 
             # Set as selected SVG version for the image
@@ -165,7 +165,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
 
             # Publish image_status for COMPLETED
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -175,7 +175,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             logger.info(
                 "SVG vectorization completed",
                 svg_version_id=svg_version_id,
-                output_path=output_path,
+                s3_key=output_key,
             )
 
         except VectorizerBadRequestError as e:
@@ -189,7 +189,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             # Publish image_status for ERROR
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -208,7 +208,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             # Publish image_status for ERROR
             await mercure.publish_image_status(
-                shopify_id=shopify_id,
+                order_id=order_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,

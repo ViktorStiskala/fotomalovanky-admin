@@ -77,11 +77,14 @@ async def save_or_get_order(payload: dict[str, object], session: AsyncSession) -
         customer_name = str(first_name) if first_name else None
 
     # Create new order
-    # Use "name" field (e.g., "#1270") for display, not "order_number" (e.g., 1270)
+    # Use "name" field (e.g., "#1270") for both order_number and shopify_order_number
+    shopify_order_number = str(payload.get("name", ""))
     email = payload.get("email")
+
     order = Order(
+        order_number=shopify_order_number,  # Display value (same as shopify_order_number for Shopify orders)
         shopify_id=cast(int, shopify_id),
-        shopify_order_number=str(payload.get("name", "")),
+        shopify_order_number=shopify_order_number,
         customer_email=str(email) if email else None,
         customer_name=customer_name,
         status=OrderStatus.PENDING,
@@ -134,7 +137,7 @@ async def shopify_webhook(request: Request) -> Response:
         order = await save_or_get_order(payload, session)
 
         # Only enqueue if order is pending (not already being processed)
-        if order.status == OrderStatus.PENDING and order.id is not None:
+        if order.status == OrderStatus.PENDING:
             ingest_order.send(order.id)
             logger.info("Enqueued order for processing", order_id=order.id)
 

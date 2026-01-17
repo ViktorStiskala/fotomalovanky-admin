@@ -21,47 +21,46 @@ import { Button } from "@/components/ui/button";
 import { ImageCard } from "./ImageCard";
 
 export default function OrderDetail() {
-  const { shopifyId } = useParams<{ shopifyId: string }>();
-  const shopifyIdNum = shopifyId ? parseInt(shopifyId, 10) : 0;
+  const { orderId } = useParams<{ orderId: string }>();
   const [dismissedSuccess, setDismissedSuccess] = useState(false);
   const [dismissedError, setDismissedError] = useState(false);
 
   // Subscribe to real-time updates for this specific order
-  useOrderEvents(shopifyIdNum);
+  useOrderEvents(orderId ?? "");
 
   const {
     data: order,
     isLoading,
     error,
   } = useQuery({
-    queryKey: getGetOrderQueryKey(shopifyIdNum),
-    queryFn: () => fetchOrder(shopifyIdNum),
-    enabled: shopifyIdNum > 0,
+    queryKey: getGetOrderQueryKey(orderId),
+    queryFn: () => fetchOrder(orderId!),
+    enabled: Boolean(orderId),
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => syncOrder(shopifyIdNum),
+    mutationFn: () => syncOrder(orderId!),
     onMutate: () => {
       setDismissedSuccess(false);
       setDismissedError(false);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
     },
   });
 
   const generateAllColoringMutation = useMutation({
-    mutationFn: () => generateOrderColoring(shopifyIdNum),
+    mutationFn: () => generateOrderColoring(orderId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 
   const generateAllSvgMutation = useMutation({
-    mutationFn: () => generateOrderSvg(shopifyIdNum),
+    mutationFn: () => generateOrderSvg(orderId!),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 
@@ -115,7 +114,7 @@ export default function OrderDetail() {
         <Link to="/" className="text-muted-foreground hover:text-foreground">
           ← Objednávka
         </Link>
-        <h1 className="text-2xl font-bold underline">{order.shopify_order_number}</h1>
+        <h1 className="text-2xl font-bold underline">{order.order_number}</h1>
         <span className={`px-2 py-1 rounded-full text-xs font-medium ${status.color}`}>
           {status.label}
         </span>
@@ -258,11 +257,17 @@ export default function OrderDetail() {
         <Button variant="outline" disabled={isProcessing}>
           Vygenerovat PDF
         </Button>
-        <Button variant="outline" asChild>
-          <a href={getShopifyOrderUrl(order.shopify_id)} target="_blank" rel="noopener noreferrer">
-            Otevřít ve Shopify
-          </a>
-        </Button>
+        {order.shopify_id && (
+          <Button variant="outline" asChild>
+            <a
+              href={getShopifyOrderUrl(order.shopify_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Otevřít ve Shopify
+            </a>
+          </Button>
+        )}
       </div>
 
       {/* Order Info */}
@@ -363,7 +368,7 @@ export default function OrderDetail() {
                   </div>
                 ) : (
                   lineItem.images.map((image) => (
-                    <ImageCard key={image.id} image={image} shopifyId={shopifyIdNum} />
+                    <ImageCard key={image.id} image={image} orderId={order.id} />
                   ))
                 )}
               </div>

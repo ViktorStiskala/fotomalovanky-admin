@@ -35,6 +35,30 @@ src/pages/OrderDetail/
     └── useImageMutations.ts
 ```
 
+## Order ID (ULID) Usage
+
+- `order.id` is a ULID string (26 characters), used for:
+  - URL parameters (`/orders/:orderId`)
+  - API calls
+  - Query keys
+  - Mercure subscriptions
+- `order.order_number` is the display value (e.g., `#1270` for Shopify, `#M1000` for manual)
+- `order.shopify_id` is optional (only for Shopify orders, for "Open in Shopify" button)
+
+```typescript
+// URL routing
+<Route path="/orders/:orderId" element={<OrderDetail />} />
+
+// In component
+const { orderId } = useParams<{ orderId: string }>();
+
+// Display to user
+<h1>{order.order_number}</h1>  // Shows "#1270"
+
+// Link to order
+<Link to={`/orders/${order.id}`}>{order.order_number}</Link>
+```
+
 ## Custom Hooks Pattern
 
 ### Extract Related Mutations
@@ -45,10 +69,10 @@ When a component has multiple related mutations, extract to a custom hook:
 // hooks/useImageMutations.ts
 import { getGetOrderQueryKey } from "@/api/generated/orders/orders";
 
-export function useImageMutations(imageId: number, shopifyId: number) {
+export function useImageMutations(imageId: number, orderId: string) {
   const generateColoringMutation = useMutation({
     mutationFn: () => generateImageColoring(imageId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) }),
   });
 
   const generateSvgMutation = useMutation({...});
@@ -132,17 +156,17 @@ For backward compatibility, `@/lib/api.ts` re-exports generated types and wrappe
 ```typescript
 import { getListOrdersQueryKey, getGetOrderQueryKey } from "@/api/generated/orders/orders";
 
-// In useQuery - ALWAYS use generated key
+// In useQuery - ALWAYS use generated key (orderId is ULID string)
 const { data } = useQuery({
-  queryKey: getGetOrderQueryKey(shopifyId),
-  queryFn: () => fetchOrder(shopifyId),
+  queryKey: getGetOrderQueryKey(orderId),
+  queryFn: () => fetchOrder(orderId),
 });
 
 // In mutations - ALWAYS use generated key for invalidation
 const mutation = useMutation({
-  mutationFn: () => syncOrder(shopifyId),
+  mutationFn: () => syncOrder(orderId),
   onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+    queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
   },
 });
@@ -167,9 +191,11 @@ type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | Orde
 
 const event = data as MercureEvent;
 if (event.type === "image_status") {
-  // TypeScript knows event.image_id exists
+  // TypeScript knows event.order_id and event.image_id exist
 }
 ```
+
+Note: Events use `order_id` (ULID string), not `shopify_id`.
 
 ### SDK Regeneration
 
@@ -217,11 +243,11 @@ The Orval-generated code already includes `/api/v1` in the endpoint paths.
 ```typescript
 interface ImageCardProps {
   image: OrderImage;
-  shopifyId: number;
+  orderId: string;  // ULID string
   onPreview?: (src: string, alt: string) => void;
 }
 
-function ImageCard({ image, shopifyId, onPreview }: ImageCardProps) {
+function ImageCard({ image, orderId, onPreview }: ImageCardProps) {
   // ...
 }
 ```

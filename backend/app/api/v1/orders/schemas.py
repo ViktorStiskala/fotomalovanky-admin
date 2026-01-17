@@ -7,11 +7,11 @@ from pydantic import BaseModel, field_serializer
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import ColoringProcessingStatus, OrderStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
-from app.services.storage.storage_service import LocalStorageService
+from app.services.storage.storage_service import S3StorageService
 from app.utils.datetime_utils import to_api_timezone
 
 # Module-level storage service for URL generation
-_storage = LocalStorageService()
+_storage = S3StorageService()
 
 # =============================================================================
 # Response Schemas
@@ -21,9 +21,10 @@ _storage = LocalStorageService()
 class OrderResponse(BaseModel):
     """Order response schema for list view."""
 
-    id: int
-    shopify_id: int
-    shopify_order_number: str
+    id: str  # ULID
+    order_number: str  # Display value: "#1270" or "#M1000"
+    shopify_id: int | None
+    shopify_order_number: str | None
     customer_email: str | None
     customer_name: str | None
     payment_status: str | None
@@ -42,7 +43,8 @@ class OrderResponse(BaseModel):
     def from_model(cls, order: Order) -> "OrderResponse":
         """Create response from Order model."""
         return cls(
-            id=order.id,  # type: ignore[arg-type]
+            id=order.id,
+            order_number=order.order_number,
             shopify_id=order.shopify_id,
             shopify_order_number=order.shopify_order_number,
             customer_email=order.customer_email,
@@ -91,7 +93,7 @@ class ColoringVersionResponse(BaseModel):
         return cls(
             id=cv.id,  # type: ignore[arg-type]
             version=cv.version,
-            url=_storage.get_public_url(cv.file_path),
+            url=_storage.get_public_url(cv.file_ref),
             status=cv.status,
             options=ColoringOptionsResponse(
                 megapixels=cv.megapixels,
@@ -125,7 +127,7 @@ class SvgVersionResponse(BaseModel):
         return cls(
             id=sv.id,  # type: ignore[arg-type]
             version=sv.version,
-            url=_storage.get_public_url(sv.file_path),
+            url=_storage.get_public_url(sv.file_ref),
             status=sv.status,
             coloring_version_id=sv.coloring_version_id,
             options=SvgOptionsResponse(
@@ -156,12 +158,12 @@ class ImageResponse(BaseModel):
     id: int
     position: int
     url: str | None
-    downloaded_at: datetime | None
+    uploaded_at: datetime | None  # Renamed from downloaded_at
     selected_version_ids: SelectedVersionIdsResponse
     versions: VersionsResponse
 
-    @field_serializer("downloaded_at")
-    def serialize_downloaded_at(self, dt: datetime | None) -> str | None:
+    @field_serializer("uploaded_at")
+    def serialize_uploaded_at(self, dt: datetime | None) -> str | None:
         """Serialize datetime to API timezone."""
         localized_dt = to_api_timezone(dt)
         return localized_dt.isoformat() if localized_dt else None
@@ -177,8 +179,8 @@ class ImageResponse(BaseModel):
         return cls(
             id=img.id,  # type: ignore[arg-type]
             position=img.position,
-            url=_storage.get_public_url(img.local_path),
-            downloaded_at=img.downloaded_at,
+            url=_storage.get_public_url(img.file_ref),
+            uploaded_at=img.uploaded_at,
             selected_version_ids=SelectedVersionIdsResponse(
                 coloring=img.selected_coloring_id,
                 svg=img.selected_svg_id,
@@ -219,9 +221,10 @@ class LineItemResponse(BaseModel):
 class OrderDetailResponse(BaseModel):
     """Detailed order response with line items and images."""
 
-    id: int
-    shopify_id: int
-    shopify_order_number: str
+    id: str  # ULID
+    order_number: str  # Display value: "#1270" or "#M1000"
+    shopify_id: int | None
+    shopify_order_number: str | None
     customer_email: str | None
     customer_name: str | None
     payment_status: str | None
@@ -241,7 +244,8 @@ class OrderDetailResponse(BaseModel):
     def from_model(cls, order: Order) -> "OrderDetailResponse":
         """Create response from Order model."""
         return cls(
-            id=order.id,  # type: ignore[arg-type]
+            id=order.id,
+            order_number=order.order_number,
             shopify_id=order.shopify_id,
             shopify_order_number=order.shopify_order_number,
             customer_email=order.customer_email,

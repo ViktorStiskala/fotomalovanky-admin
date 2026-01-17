@@ -11,7 +11,7 @@ from app.services.coloring.vectorizer_service import VectorizerService
 from app.services.external.mercure import MercureService
 from app.services.orders.image_service import OrderImageService
 from app.services.orders.order_service import OrderService
-from app.services.storage.storage_service import LocalStorageService, StorageService
+from app.services.storage.storage_service import S3StorageService
 
 
 async def get_order_service(
@@ -42,9 +42,9 @@ async def get_vectorizer_service(
     return VectorizerService(session)
 
 
-def get_storage_service() -> StorageService:
-    """Get a StorageService instance."""
-    return LocalStorageService()
+def get_storage_service() -> S3StorageService:
+    """Get a S3StorageService instance."""
+    return S3StorageService()
 
 
 def get_mercure_service() -> MercureService:
@@ -57,5 +57,5 @@ OrderServiceDep = Annotated[OrderService, Depends(get_order_service)]
 ImageServiceDep = Annotated[OrderImageService, Depends(get_image_service)]
 ColoringServiceDep = Annotated[ColoringService, Depends(get_coloring_service)]
 VectorizerServiceDep = Annotated[VectorizerService, Depends(get_vectorizer_service)]
-StorageServiceDep = Annotated[StorageService, Depends(get_storage_service)]
+StorageServiceDep = Annotated[S3StorageService, Depends(get_storage_service)]
 MercureServiceDep = Annotated[MercureService, Depends(get_mercure_service)]

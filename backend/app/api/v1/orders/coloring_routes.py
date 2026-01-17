@@ -7,15 +7,19 @@ from app.api.v1.orders.dependencies import (
     ColoringServiceDep,
     ImageServiceDep,
     MercureServiceDep,
+    VectorizerServiceDep,
 )
 from app.api.v1.orders.schemas import (
     ColoringVersionResponse,
     GenerateColoringRequest,
     GenerateColoringResponse,
+    SvgVersionResponse,
 )
+from app.models.enums import VersionType
 from app.services.coloring.exceptions import (
     ColoringVersionNotFound,
     NoImagesToProcess,
+    SvgVersionNotFound,
     VersionNotInErrorState,
 )
 from app.services.orders.exceptions import (
@@ -24,6 +28,7 @@ from app.services.orders.exceptions import (
     OrderNotFound,
 )
 from app.tasks.coloring.generate_coloring import generate_coloring
+from app.tasks.coloring.vectorize_image import generate_svg
 
 logger = structlog.get_logger(__name__)
 
@@ -31,12 +36,12 @@ router = APIRouter(tags=["coloring"])
 
 
 @router.post(
-    "/orders/{shopify_id}/generate-coloring",
+    "/orders/{order_id}/generate-coloring",
     response_model=GenerateColoringResponse,
     operation_id="generateOrderColoring",
 )
 async def generate_order_coloring(
-    shopify_id: int,
+    order_id: str,
     service: ColoringServiceDep,
     request: GenerateColoringRequest | None = None,
 ) -> GenerateColoringResponse:
@@ -45,7 +50,7 @@ async def generate_order_coloring(
 
     try:
         version_ids = await service.create_versions_for_order(
-            shopify_id,
+            order_id,
             megapixels=req.megapixels,
             steps=req.steps,
         )
@@ -93,7 +98,7 @@ async def generate_image_coloring(
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.line_item.order.shopify_id, image_id)
+        await mercure.publish_image_update(image.line_item.order.id, image_id)
 
         return ColoringVersionResponse.from_model(coloring_version)
     except ImageNotFound:
@@ -106,23 +111,30 @@ async def generate_image_coloring(
 
 
 @router.post(
-    "/coloring-versions/{version_id}/retry", response_model=ColoringVersionResponse, operation_id="retryColoringVersion"
+    "/versions/{version_type}/{version_id}/retry",
+    response_model=ColoringVersionResponse | SvgVersionResponse,
+    operation_id="retryVersion",
 )
-async def retry_coloring_version(
+async def retry_version(
+    version_type: VersionType,
     version_id: int,
-    service: ColoringServiceDep,
-) -> ColoringVersionResponse:
-    """Retry a failed coloring version generation with the same settings."""
+    coloring_service: ColoringServiceDep,
+    vectorizer_service: VectorizerServiceDep,
+) -> ColoringVersionResponse | SvgVersionResponse:
+    """Retry a failed version generation with the same settings."""
     try:
-        coloring_version = await service.prepare_retry(version_id)
-
-        # Dispatch task after DB commit
-        assert coloring_version.id is not None
-        generate_coloring.send(coloring_version.id)
-
-        return ColoringVersionResponse.from_model(coloring_version)
-    except ColoringVersionNotFound:
-        raise HTTPException(status_code=404, detail="Coloring version not found")
+        if version_type == VersionType.COLORING:
+            coloring_version = await coloring_service.prepare_retry(version_id)
+            assert coloring_version.id is not None
+            generate_coloring.send(coloring_version.id)
+            return ColoringVersionResponse.from_model(coloring_version)
+        else:  # VersionType.SVG
+            svg_version = await vectorizer_service.prepare_retry(version_id)
+            assert svg_version.id is not None
+            generate_svg.send(svg_version.id)
+            return SvgVersionResponse.from_model(svg_version)
+    except (ColoringVersionNotFound, SvgVersionNotFound):
+        raise HTTPException(status_code=404, detail=f"{version_type.capitalize()} version not found")
     except VersionNotInErrorState:
         raise HTTPException(
             status_code=400,

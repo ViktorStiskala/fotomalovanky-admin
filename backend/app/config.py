@@ -32,9 +32,14 @@ class Settings(BaseSettings):
     shopify_access_token: str = ""
     shopify_webhook_secret: str = ""
 
-    # Storage
-    storage_path: str = "/data/images"
-    static_url: str = "http://localhost:8081/static"  # URL for browser to access static files
+    # S3 Storage (MinIO/R2/AWS S3) - all required, no fallbacks
+    s3_endpoint: str  # e.g., "http://minio:9000" for MinIO, R2 endpoint for production
+    s3_bucket: str = "fotomalovanky"
+    s3_region: str = "auto"
+    s3_access_key_id: str
+    s3_secret_access_key: str
+    s3_force_path_style: bool = True  # True for MinIO/R2
+    s3_public_url: str  # MANDATORY - public URL for file access (no fallbacks)
 
     # RunPod
     runpod_api_key: str = ""

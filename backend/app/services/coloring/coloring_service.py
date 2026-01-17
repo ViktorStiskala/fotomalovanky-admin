@@ -60,7 +60,7 @@ class ColoringService:
         if not image:
             raise ImageNotFound()
 
-        if not image.local_path:
+        if not image.file_ref:
             raise ImageNotDownloaded()
 
         next_version = await self._get_next_version(image_id)
@@ -92,7 +92,7 @@ class ColoringService:
 
     async def create_versions_for_order(
         self,
-        shopify_id: int,
+        order_id: str,
         *,
         megapixels: float = 1.0,
         steps: int = 4,
@@ -109,7 +109,7 @@ class ColoringService:
                 .selectinload(LineItem.images)  # type: ignore[arg-type]
                 .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
             )
-            .where(Order.shopify_id == shopify_id)
+            .where(Order.id == order_id)
         )
         result = await self.session.execute(statement)
         order = result.scalars().first()
@@ -120,7 +120,7 @@ class ColoringService:
         images_to_process: list[Image] = []
         for li in order.line_items:
             for img in li.images:
-                if not img.local_path:
+                if not img.file_ref:
                     continue
                 has_completed = any(cv.status == ColoringProcessingStatus.COMPLETED for cv in img.coloring_versions)
                 if has_completed:
@@ -159,7 +159,7 @@ class ColoringService:
 
         logger.info(
             "Created coloring versions for order",
-            shopify_id=shopify_id,
+            order_id=order_id,
             count=len(version_ids),
         )
 

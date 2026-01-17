@@ -7,14 +7,14 @@ import { Icon } from "@/components/icons";
 interface OriginalImageDisplayProps {
   url: string | null;
   position: number;
-  downloadedAt: string | null;
+  uploadedAt: string | null;
   onFullscreen: (image: { src: string; alt: string }) => void;
 }
 
 export function OriginalImageDisplay({
   url,
   position,
-  downloadedAt,
+  uploadedAt,
   onFullscreen,
 }: OriginalImageDisplayProps) {
   return (
@@ -50,7 +50,7 @@ export function OriginalImageDisplay({
         className="placeholder absolute inset-0 items-center justify-center text-muted-foreground text-sm"
         style={{ display: url ? "none" : "flex" }}
       >
-        {downloadedAt ? "Staženo" : "Čeká na stažení"}
+        {uploadedAt ? "Nahráno" : "Čeká na nahrání"}
       </div>
     </div>
   );

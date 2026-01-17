@@ -40,9 +40,12 @@ alwaysApply: true
 - **HTTP client:** `httpx` (async) **ONLY**. **NEVER** add or use `requests`.
 - **Background jobs:** **Dramatiq** + **Redis** for long-running work.
     - `ingest_order` task - fetches order from Shopify, creates LineItem/Image records
-    - `download_order_images` task - downloads images in parallel with `asyncio.gather`
+    - `download_order_images` task - uploads images to S3 in parallel with `asyncio.gather`
     - Use `tenacity` for per-operation retries with exponential backoff
 - **Real-time:** Publish events to **Mercure** hub for SSE push to frontend.
+- **S3 Storage:** Use `aioboto3` for S3-compatible storage (MinIO local, Cloudflare R2 production).
+    - `S3StorageService` handles all file operations
+    - `OrderStoragePaths` generates keys from model instances
 - **Shopify API:** Use `ariadne-codegen` generated typed client in `app/services/external/shopify_client/`.
     - GraphQL queries are defined in `app/graphql/queries/`
     - Run `uv run codegen` after modifying queries to regenerate the client
@@ -61,7 +64,7 @@ alwaysApply: true
 
 ## Design Principles
 - **Async-first:** All I/O paths **MUST** be async. **NEVER** block in request handlers.
-- **Parallel operations:** Use `asyncio.gather` for independent async operations (e.g., parallel image downloads, parallel HTTP requests)
+- **Parallel operations:** Use `asyncio.gather` for independent async operations (e.g., parallel image uploads, parallel HTTP requests)
     - **Note:** SQLAlchemy async sessions do NOT support concurrent queries on the same session
 - Offload long work to Dramatiq workers (image downloads, PDF generation)
 - Backend modules **MUST** belong under `backend/app/` in a fitting subpackage
@@ -74,8 +77,9 @@ alwaysApply: true
 - Copy `.env.example` to `.env` and fill in the values
 - **Local development** (outside Docker):
     - `DATABASE_URL` must point to `localhost:5439` (docker-compose exposes postgres on port 5439 to avoid system postgres conflicts)
+    - `S3_ENDPOINT` must point to `http://localhost:9000` (MinIO)
     - Required for running `uv run alembic` commands locally
-- **Inside Docker containers**: `DATABASE_URL` is set automatically via docker-compose
+- **Inside Docker containers**: Environment variables are set automatically via docker-compose
 
 ## SDK Generation
 - `ORVAL_API_URL` - URL to fetch OpenAPI schema (Docker: `http://backend:8000/openapi.json`)
@@ -88,29 +92,35 @@ alwaysApply: true
 - **MUST** return `200 OK` immediately to Shopify before starting background processing
 - **MUST** implement idempotency - duplicate webhooks should not corrupt data (use `shopify_id` as unique key)
 
+## Order ID Structure
+- `Order.id` - ULID string (stored as PostgreSQL UUID), used in API URLs and internal references
+- `Order.order_number` - Display value (e.g., `#1270` for Shopify, `#M1000` for manual orders)
+- `Order.shopify_id` - Optional numeric Shopify ID for external API calls
+- `Order.shopify_order_number` - Optional Shopify display number (kept as-is from Shopify)
+
 ## Real-time Updates (Ping-to-Refetch Pattern)
 - **DO NOT** send full data payloads via SSE
 - **MUST** emit Mercure events on **every** state change using `MercureService`:
     - New order created (webhook, manual fetch) → `mercure.publish_order_list_update()`
-    - Order status changed → `mercure.publish_order_update(shopify_id)`
-    - Images downloaded/updated → `mercure.publish_order_update(shopify_id)`
+    - Order status changed → `mercure.publish_order_update(order_id)`
+    - Images downloaded/updated → `mercure.publish_order_update(order_id)`
     - Any data modification visible to users → appropriate Mercure publish
 - **Usage:**
     ```python
     from app.services.external.mercure import MercureService
     mercure = MercureService()
-    await mercure.publish_order_update(shopify_id)
+    await mercure.publish_order_update(order_id)  # order_id is ULID string
     ```
 - **Pattern:**
     1. Backend updates PostgreSQL
     2. Backend posts lightweight ping to Mercure topic:
         - List updates: `{"type": "list_update"}` to `orders` topic
-        - Order updates: `{"type": "order_update", "shopify_id": 16828028518749}` to `orders` and `orders/{shopify_id}` topics
+        - Order updates: `{"type": "order_update", "order_id": "01HV..."}` to `orders` and `orders/{order_id}` topics
     3. Frontend receives ping via SSE (hooks in `frontend/src/hooks/`)
     4. Frontend invalidates TanStack Query cache → triggers refetch from API
 - **Frontend hooks:**
     - `useOrderListEvents()` - subscribes to `orders` topic for list view
-    - `useOrderEvents(shopifyId)` - subscribes to `orders/{shopifyId}` topic for detail view
+    - `useOrderEvents(orderId)` - subscribes to `orders/{orderId}` topic for detail view
 
 ## Quality & Testing (MANDATORY)
 
@@ -126,7 +136,7 @@ alwaysApply: true
 - Use `npm run format` to auto-format code with Prettier
 
 ## Error Handling
-- If image download fails, update DB status to `error` and expose a "Retry" button in the UI
+- If image upload fails, update DB status to `error` and expose a "Retry" button in the UI
 - Log errors with structured logging (use `structlog` for backend)
 - **MUST** handle Shopify API rate limits gracefully (implement retry with backoff)
 
@@ -135,8 +145,8 @@ alwaysApply: true
 |--------|-------------|
 | `pending` | Webhook received, waiting for processing |
 | `processing` | `ingest_order` task running (fetching from Shopify, creating records) |
-| `downloading` | `download_order_images` task running (parallel image downloads) |
-| `ready_for_review` | All images downloaded, ready for admin review |
+| `downloading` | `download_order_images` task running (parallel S3 uploads) |
+| `ready_for_review` | All images uploaded, ready for admin review |
 | `error` | Something failed (show Retry button) |
 
 ### Task Flow
@@ -144,4 +154,4 @@ alwaysApply: true
 webhook/API → ingest_order (PROCESSING) → download_order_images (DOWNLOADING) → READY_FOR_REVIEW
 ```
 - `ingest_order`: Fetches Shopify data, creates LineItem/Image records, dispatches download task
-- `download_order_images`: Downloads all images in parallel with retries, updates status
+- `download_order_images`: Downloads images and uploads to S3 in parallel with retries, updates status

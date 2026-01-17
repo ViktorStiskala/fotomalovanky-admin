@@ -21,14 +21,14 @@ import { queryClient } from "@/lib/queryClient";
 
 interface UseImageMutationsOptions {
   imageId: number;
-  shopifyId: number;
+  orderId: string; // ULID string
   onColoringGenerated?: () => void;
   onSvgGenerated?: () => void;
 }
 
 export function useImageMutations({
   imageId,
-  shopifyId,
+  orderId,
   onColoringGenerated,
   onSvgGenerated,
 }: UseImageMutationsOptions) {
@@ -36,7 +36,7 @@ export function useImageMutations({
   const generateColoringMutation = useMutation({
     mutationFn: (settings: ColoringSettings) => generateImageColoring(imageId, settings),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
       onColoringGenerated?.();
     },
   });
@@ -45,7 +45,7 @@ export function useImageMutations({
   const generateSvgMutation = useMutation({
     mutationFn: (settings: SvgSettings) => generateImageSvg(imageId, settings),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
       onSvgGenerated?.();
     },
   });
@@ -54,7 +54,7 @@ export function useImageMutations({
   const selectColoringMutation = useMutation({
     mutationFn: (versionId: number) => selectColoringVersion(imageId, versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 
@@ -62,7 +62,7 @@ export function useImageMutations({
   const selectSvgMutation = useMutation({
     mutationFn: (versionId: number) => selectSvgVersion(imageId, versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 
@@ -70,7 +70,7 @@ export function useImageMutations({
   const retryColoringMutation = useMutation({
     mutationFn: (versionId: number) => retryColoringVersion(versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 
@@ -78,7 +78,7 @@ export function useImageMutations({
   const retrySvgMutation = useMutation({
     mutationFn: (versionId: number) => retrySvgVersion(versionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
   });
 

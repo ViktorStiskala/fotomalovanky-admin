@@ -16,20 +16,18 @@ from app.api.v1.orders.schemas import (
 from app.services.coloring.exceptions import (
     NoColoringAvailable,
     NoImagesToProcess,
-    SvgVersionNotFound,
-    VersionNotInErrorState,
 )
 from app.services.orders.exceptions import ImageNotFound, OrderNotFound
-from app.tasks.coloring.vectorize_image import vectorize_image
+from app.tasks.coloring.vectorize_image import generate_svg
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["svg"])
 
 
-@router.post("/orders/{shopify_id}/generate-svg", response_model=GenerateSvgResponse, operation_id="generateOrderSvg")
+@router.post("/orders/{order_id}/generate-svg", response_model=GenerateSvgResponse, operation_id="generateOrderSvg")
 async def generate_order_svg(
-    shopify_id: int,
+    order_id: str,
     service: VectorizerServiceDep,
     request: GenerateSvgRequest | None = None,
 ) -> GenerateSvgResponse:
@@ -38,14 +36,14 @@ async def generate_order_svg(
 
     try:
         version_ids = await service.create_versions_for_order(
-            shopify_id,
+            order_id,
             shape_stacking=req.shape_stacking,
             group_by=req.group_by,
         )
 
         # Dispatch tasks after DB commit
         for version_id in version_ids:
-            vectorize_image.send(version_id)
+            generate_svg.send(version_id)
 
         return GenerateSvgResponse(
             queued=len(version_ids),
@@ -80,11 +78,11 @@ async def generate_image_svg(
 
         # Dispatch task after DB commit
         assert svg_version.id is not None
-        vectorize_image.send(svg_version.id)
+        generate_svg.send(svg_version.id)
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.line_item.order.shopify_id, image_id)
+        await mercure.publish_image_update(image.line_item.order.id, image_id)
 
         return SvgVersionResponse.from_model(svg_version)
     except ImageNotFound:
@@ -93,27 +91,4 @@ async def generate_image_svg(
         raise HTTPException(
             status_code=400,
             detail="No completed coloring version found. Generate a coloring book first.",
-        )
-
-
-@router.post("/svg-versions/{version_id}/retry", response_model=SvgVersionResponse, operation_id="retrySvgVersion")
-async def retry_svg_version(
-    version_id: int,
-    service: VectorizerServiceDep,
-) -> SvgVersionResponse:
-    """Retry a failed SVG version generation with the same settings."""
-    try:
-        svg_version = await service.prepare_retry(version_id)
-
-        # Dispatch task after DB commit
-        assert svg_version.id is not None
-        vectorize_image.send(svg_version.id)
-
-        return SvgVersionResponse.from_model(svg_version)
-    except SvgVersionNotFound:
-        raise HTTPException(status_code=404, detail="SVG version not found")
-    except VersionNotInErrorState:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only retry versions with error status",
         )

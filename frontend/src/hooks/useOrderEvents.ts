@@ -28,25 +28,25 @@ type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | Orde
  * This enables real-time status updates as background workers process the order,
  * with minimal network overhead during frequent status changes.
  *
- * @param shopifyId - The Shopify order ID (numeric)
+ * @param orderId - The Order ID (ULID string)
  */
-export function useOrderEvents(shopifyId: number): void {
+export function useOrderEvents(orderId: string): void {
   const handleMessage = useCallback(
     async (data: unknown) => {
       const event = data as MercureEvent;
-      console.log(`[Mercure] Order ${shopifyId} event received:`, event);
+      console.log(`[Mercure] Order ${orderId} event received:`, event);
 
       if (event.type === "image_status" || event.type === "image_update") {
         // Efficient update: fetch only the updated image
         try {
-          const response = await getOrderImage(shopifyId, event.image_id);
+          const response = await getOrderImage(orderId, event.image_id);
 
           // Handle the response (may have status/data structure from Orval)
           const imageData = "data" in response ? response.data : response;
 
           // Update the cache by replacing just this image in the order data
           queryClient.setQueryData(
-            getGetOrderQueryKey(shopifyId),
+            getGetOrderQueryKey(orderId),
             (oldData: { data: OrderDetailResponse } | OrderDetailResponse | undefined) => {
               if (!oldData) return oldData;
 
@@ -68,18 +68,18 @@ export function useOrderEvents(shopifyId: number): void {
         } catch (error) {
           console.error("[Mercure] Failed to fetch image:", error);
           // Fallback: invalidate the whole order query
-          queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+          queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
         }
       } else {
         // For order_update events or list_update: invalidate to trigger full refetch
-        queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+        queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
 
         // Also invalidate the orders list in case status changed
         queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       }
     },
-    [shopifyId]
+    [orderId]
   );
 
-  useMercure(`orders/${shopifyId}`, handleMessage, shopifyId > 0);
+  useMercure(`orders/${orderId}`, handleMessage, Boolean(orderId));
 }

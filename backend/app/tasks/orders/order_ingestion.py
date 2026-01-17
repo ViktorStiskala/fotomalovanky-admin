@@ -18,7 +18,7 @@ logger = structlog.get_logger(__name__)
 
 @task_recover(ShopifySyncService.get_incomplete_ingestions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
-def ingest_order(order_id: int) -> None:
+def ingest_order(order_id: str) -> None:
     """Background task to ingest and process an order.
 
     This task:
@@ -33,7 +33,7 @@ def ingest_order(order_id: int) -> None:
     asyncio.run(_ingest_order_async(order_id))
 
 
-async def _ingest_order_async(order_id: int) -> None:
+async def _ingest_order_async(order_id: str) -> None:
     """Async implementation of order ingestion."""
     mercure = MercureService()
 
@@ -45,14 +45,11 @@ async def _ingest_order_async(order_id: int) -> None:
             logger.error("Order not found", order_id=order_id)
             return
 
-        assert order.id is not None, "Order ID cannot be None after database fetch"
-        shopify_id = order.shopify_id
-
         try:
             # Set status to PROCESSING
             order.status = OrderStatus.PROCESSING
             await session.commit()
-            await mercure.publish_order_update(shopify_id)
+            await mercure.publish_order_update(order_id)
 
             # Use ShopifySyncService for the actual sync logic
             service = ShopifySyncService(session)
@@ -62,7 +59,7 @@ async def _ingest_order_async(order_id: int) -> None:
                 logger.error("Order ingestion failed", order_id=order_id, error=result.error)
                 order.status = OrderStatus.ERROR
                 await session.commit()
-                await mercure.publish_order_update(shopify_id)
+                await mercure.publish_order_update(order_id)
                 return
 
             # Dispatch image download task or mark complete
@@ -72,7 +69,7 @@ async def _ingest_order_async(order_id: int) -> None:
             else:
                 order.status = OrderStatus.READY_FOR_REVIEW
                 await session.commit()
-                await mercure.publish_order_update(shopify_id)
+                await mercure.publish_order_update(order_id)
 
             logger.info("Order ingestion complete", order_id=order_id)
 
@@ -80,5 +77,5 @@ async def _ingest_order_async(order_id: int) -> None:
             logger.error("Order ingestion failed", order_id=order_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await mercure.publish_order_update(shopify_id)
+            await mercure.publish_order_update(order_id)
             raise

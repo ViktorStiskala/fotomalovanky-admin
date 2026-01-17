@@ -23,14 +23,15 @@ app/services/
 │   ├── exceptions.py          # OrderNotFound, ImageNotFound, etc.
 │   ├── order_service.py
 │   ├── image_service.py
-│   ├── image_download_service.py  # Image download with tenacity retries
+│   ├── image_download_service.py  # Image download/upload with S3
 │   └── shopify_sync_service.py    # Shopify order sync logic
 ├── coloring/                  # Domain: image processing
 │   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
 │   ├── coloring_service.py
 │   └── vectorizer_service.py
-├── storage/                   # File storage abstraction
-│   └── storage_service.py     # StorageService ABC + LocalStorageService
+├── storage/                   # S3 storage abstraction
+│   ├── storage_service.py     # S3StorageService
+│   └── paths.py               # OrderStoragePaths key generation
 └── external/                  # Third-party API clients (all classes)
     ├── mercure.py             # MercureService
     ├── runpod.py              # RunPodService
@@ -47,9 +48,9 @@ class OrderService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_order(self, shopify_id: int) -> Order:
+    async def get_order(self, order_id: str) -> Order:
         """Business logic here, raises custom exceptions."""
-        order = await self._fetch_order(shopify_id)
+        order = await self._fetch_order(order_id)  # order_id is ULID string
         if not order:
             raise OrderNotFound()
         return order
@@ -58,10 +59,10 @@ class OrderService:
 ### API Route Pattern
 
 ```python
-@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
-async def get_order(shopify_id: int, service: OrderServiceDep) -> OrderDetailResponse:
+@router.get("/orders/{order_id}", response_model=OrderDetailResponse, operation_id="getOrder")
+async def get_order(order_id: str, service: OrderServiceDep) -> OrderDetailResponse:
     try:
-        order = await service.get_order(shopify_id)
+        order = await service.get_order(order_id)  # order_id is ULID string
         return OrderDetailResponse.from_model(order)
     except OrderNotFound:
         raise HTTPException(404, "Order not found")
@@ -72,15 +73,106 @@ async def get_order(shopify_id: int, service: OrderServiceDep) -> OrderDetailRes
 **ALL** FastAPI endpoints MUST have explicit `operation_id` for clean SDK generation:
 
 ```python
-@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
+@router.get("/orders/{order_id}", response_model=OrderDetailResponse, operation_id="getOrder")
 ```
 
 Naming convention:
 - GET single resource: `get{Resource}` (e.g., `getOrder`, `getOrderImage`)
-- GET list: `list{Resources}` (e.g., `listOrders`, `listColoringVersions`)
+- GET list: `list{Resources}` (e.g., `listOrders`, `listVersions`)
 - POST action: `{action}{Resource}` (e.g., `syncOrder`, `generateImageColoring`)
-- PUT update: `{action}{Resource}` (e.g., `selectColoringVersion`)
-- POST retry: `retry{Resource}` (e.g., `retryColoringVersion`)
+- PUT update: `select{Resource}` (e.g., `selectVersion`)
+- POST retry: `retry{Resource}` (e.g., `retryVersion`)
+
+## Order ID and ULID (MANDATORY)
+
+- `Order.id` is a ULID string stored as PostgreSQL UUID (16 bytes)
+- **ALL** API paths use `order_id` (ULID), not `shopify_id`
+- `Order.order_number` is the display value (e.g., `#1270` for Shopify, `#M1000` for manual)
+- `Order.shopify_id` and `Order.shopify_order_number` are optional (for Shopify orders only)
+
+```python
+from ulid import ULID
+
+# Generate new ULID
+order_id = str(ULID())
+
+# Custom SQLAlchemy type: app/models/types.py -> ULIDType
+# Stores as UUID in PostgreSQL, presents as string in Python/API
+```
+
+## S3 Storage (MANDATORY)
+
+### S3StorageService
+
+```python
+from app.services.storage.storage_service import S3StorageService
+from app.services.storage.paths import OrderStoragePaths
+
+storage = S3StorageService()
+paths = OrderStoragePaths(order)
+
+# Upload file
+key = paths.original_image(line_item, image, "jpg")
+file_ref = await storage.upload(upload_to=key, data=image_bytes, content_type="image/jpeg")
+
+# Download file
+data = await storage.download(file_ref)
+
+# Get public URL
+url = storage.get_public_url(file_ref)  # Uses S3_PUBLIC_URL (mandatory)
+```
+
+### S3ObjectRef (File References)
+
+All file references use `S3ObjectRefData` stored as JSONB:
+
+```python
+from app.models.types import S3ObjectRef, S3ObjectRefData
+
+class Image(SQLModel, table=True):
+    file_ref: S3ObjectRefData | None = Field(
+        default=None,
+        sa_column=Column(S3ObjectRef, nullable=True)
+    )
+```
+
+### OrderStoragePaths Key Generation
+
+```python
+from app.services.storage.paths import OrderStoragePaths
+
+paths = OrderStoragePaths(order)
+paths.original_image(line_item, image, "jpg")      # orders/{ulid}/items/{pos}/original/image_{pos}.jpg
+paths.coloring_version(line_item, image, version)  # orders/{ulid}/items/{pos}/coloring/v{n}/image_{pos}.png
+paths.svg_version(line_item, image, version)       # orders/{ulid}/items/{pos}/svg/v{n}/image_{pos}.svg
+```
+
+## AutoIncrementOnConflict (Race-Safe Sequences)
+
+Use `AutoIncrementOnConflict` for auto-incrementing fields with race condition handling:
+
+```python
+from app.models.utils.auto_increment import AutoIncrementOnConflict
+from app.models.order import LINE_ITEM_POSITION_CONSTRAINT
+
+async for attempt in AutoIncrementOnConflict(
+    session=self.session,
+    model_class=LineItem,
+    increment_column=LineItem.position,
+    filter_columns={LineItem.order_id: order_id},
+    constraint=LINE_ITEM_POSITION_CONSTRAINT,
+):
+    async with attempt:
+        line_item = LineItem(order_id=order_id, position=attempt.value, ...)
+        self.session.add(line_item)
+        await self.session.flush()
+```
+
+This handles:
+1. Calculates next value with `MAX(column) + 1`
+2. Creates savepoint before insert
+3. Retries on unique constraint violation
+4. Rolls back to savepoint and recalculates on conflict
 
 ## Dramatiq Tasks Architecture (MANDATORY)
 
@@ -128,7 +220,7 @@ app/tasks/
 ├── orders/              # mirrors services/orders/
 │   ├── __init__.py
 │   ├── fetch_shopify.py       # Batch fetch orders
-│   ├── image_download.py      # Download order images
+│   ├── image_download.py      # Download/upload order images to S3
 │   └── order_ingestion.py     # Ingest single order
 └── coloring/            # mirrors services/coloring/
     ├── __init__.py
@@ -155,14 +247,14 @@ from app.services import ColoringService
 from app.services.coloring.coloring_service import ColoringService
 from app.utils.shopify_helpers import build_customer_name
 from app.services.external.mercure import MercureService
-from app.services.storage.storage_service import LocalStorageService
+from app.services.storage.storage_service import S3StorageService
 
 # Using external services (always instantiate as classes)
 mercure = MercureService()
-await mercure.publish_order_update(shopify_id)
+await mercure.publish_order_update(order_id)  # order_id is ULID string
 
-storage = LocalStorageService()
-file_path = await storage.write(key, data)
+storage = S3StorageService()
+file_ref = await storage.upload(upload_to=key, data=data, content_type="image/png")
 ```
 
 ## Custom Exceptions (MANDATORY)
@@ -244,12 +336,13 @@ async def list_orders(service: OrderServiceDep) -> list[OrderResponse]:
 
 ```python
 class OrderResponse(BaseModel):
-    id: int
+    id: str  # ULID string
+    order_number: str  # Display value
     status: str
 
     @classmethod
     def from_model(cls, order: Order) -> "OrderResponse":
-        return cls(id=order.id, status=order.status.value)
+        return cls(id=order.id, order_number=order.order_number, status=order.status.value)
 ```
 
 ### Datetime Serialization
@@ -287,28 +380,6 @@ select(Order).options(
 )
 ```
 
-### Version Numbering with Race Condition Handling
-
-Handle concurrent version creation:
-
-```python
-async def _create_version_with_retry(self, ...) -> ColoringVersion:
-    """Create version with retry on conflict."""
-    max_retries = 3
-    for attempt in range(max_retries):
-        next_version = await self._get_next_version(image_id)
-        version = ColoringVersion(version=next_version, ...)
-        self.session.add(version)
-        try:
-            await self.session.flush()
-            return version
-        except IntegrityError:
-            await self.session.rollback()
-            if attempt == max_retries - 1:
-                raise
-    raise RuntimeError("Failed to create version after retries")
-```
-
 ## Mercure Event Schemas (MANDATORY)
 
 Mercure events MUST use typed Pydantic models defined in `app/models/events.py`:
@@ -316,11 +387,12 @@ Mercure events MUST use typed Pydantic models defined in `app/models/events.py`:
 - **NEVER** construct event JSON manually
 - **ALWAYS** use `event.model_dump_json()` for serialization
 - Event types: `OrderUpdateEvent`, `ListUpdateEvent`, `ImageUpdateEvent`, `ImageStatusEvent`
+- All events use `order_id` (ULID string), not `shopify_id`
 
 ```python
 from app.models.events import OrderUpdateEvent
 
-event = OrderUpdateEvent(type="order_update", shopify_id=shopify_id)
+event = OrderUpdateEvent(type="order_update", order_id=order_id)  # order_id is ULID string
 await self._publish(topics=[...], data=event.model_dump_json())
 ```
 

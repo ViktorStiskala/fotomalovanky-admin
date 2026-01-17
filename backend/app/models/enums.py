@@ -46,6 +46,13 @@ class ColoringProcessingStatus(StrEnum):
         )
 
 
+class VersionType(StrEnum):
+    """Type of generated version - used in storage paths and API routes."""
+
+    COLORING = "coloring"
+    SVG = "svg"
+
+
 class SvgProcessingStatus(StrEnum):
     """Status for SVG vectorization (Vectorizer.ai)."""
 

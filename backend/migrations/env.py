@@ -12,6 +12,7 @@ from app.config import settings
 # Import all models to register them with SQLAlchemy
 import app.models.order  # noqa: F401
 import app.models.coloring  # noqa: F401
+import app.models.manual_order_sequence  # noqa: F401
 
 config = context.config
 
