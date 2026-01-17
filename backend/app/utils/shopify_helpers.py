@@ -15,20 +15,3 @@ def build_customer_name(first_name: str | None, last_name: str | None) -> str | 
     last = last_name or ""
     full_name = f"{first} {last}".strip()
     return full_name or None
-
-
-def normalize_order_number(order_number: str) -> str:
-    """Normalize order number to include '#' prefix.
-
-    Shopify order numbers are stored with '#' prefix (e.g., "#1270"),
-    but API requests may come without it.
-
-    Args:
-        order_number: Order number with or without '#' prefix
-
-    Returns:
-        Order number with '#' prefix
-    """
-    if order_number.startswith("#"):
-        return order_number
-    return f"#{order_number}"

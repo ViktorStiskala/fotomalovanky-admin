@@ -1,7 +1,16 @@
 import { useCallback } from "react";
 import { queryClient } from "@/lib/queryClient";
 import { useMercure } from "./useMercure";
-import type { MercureEvent } from "@/types";
+import { getGetOrderQueryKey, getListOrdersQueryKey } from "@/api/generated/orders/orders";
+import type {
+  ImageStatusEvent,
+  ImageUpdateEvent,
+  ListUpdateEvent,
+  OrderUpdateEvent,
+} from "@/api/generated/schemas";
+
+// Union type for all Mercure events
+type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | OrderUpdateEvent;
 
 /**
  * Custom hook that subscribes to Mercure SSE events for the orders list.
@@ -28,11 +37,13 @@ export function useOrderListEvents(): void {
     }
 
     // Invalidate the orders list query to trigger a refetch
-    queryClient.invalidateQueries({ queryKey: ["orders"] });
+    queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
 
     // If it's an update to a specific order, also invalidate that order's query
-    if (event.type === "order_update" && event.order_number) {
-      queryClient.invalidateQueries({ queryKey: ["order", event.order_number] });
+    if (event.type === "order_update") {
+      queryClient.invalidateQueries({
+        queryKey: getGetOrderQueryKey(event.shopify_id),
+      });
     }
   }, []);
 

@@ -7,7 +7,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1 import health, orders, webhooks
+from app.api.v1 import events, health, orders, webhooks
 from app.config import settings
 from app.db import dispose_engine
 
@@ -46,3 +46,4 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(orders.router, prefix="/api/v1", tags=["orders"])
 app.include_router(webhooks.router, prefix="/api/v1", tags=["webhooks"])
+app.include_router(events.router, prefix="/api/v1", tags=["events"])

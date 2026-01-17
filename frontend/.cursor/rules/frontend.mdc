@@ -43,10 +43,12 @@ When a component has multiple related mutations, extract to a custom hook:
 
 ```typescript
 // hooks/useImageMutations.ts
-export function useImageMutations(imageId: number, orderNumber: string) {
+import { getGetOrderQueryKey } from "@/api/generated/orders/orders";
+
+export function useImageMutations(imageId: number, shopifyId: number) {
   const generateColoringMutation = useMutation({
     mutationFn: () => generateImageColoring(imageId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["order", orderNumber] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) }),
   });
 
   const generateSvgMutation = useMutation({...});
@@ -103,39 +105,89 @@ export function getShapeStackingLabel(value: string): string {
 }
 ```
 
-## API Layer
+## API Layer (Generated SDK)
 
-### Use Typed API Helper
+### Use Generated SDK
 
-**NEVER** construct fetch URLs manually. Use the `api()` helper:
+**NEVER** write manual API functions. Use the Orval-generated SDK:
 
 ```typescript
-// lib/api.ts
-async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
-  const { params, ...fetchOptions } = options;
-  let url = `${API_URL}${endpoint}`;
-  // ... params handling, error handling
-}
+// BAD - manual API call
+const { data } = useQuery({
+  queryKey: ["orders"],
+  queryFn: () => fetch("/api/v1/orders").then(r => r.json()),
+});
 
-// Usage - endpoint is relative to API_URL (which includes /api/v1)
-export async function fetchOrders(skip = 0, limit = 50): Promise<OrderListResponse> {
-  return api<OrderListResponse>("/orders", { params: { skip, limit } });
-}
+// GOOD - generated hook
+import { useListOrders } from "@/api/generated/orders/orders";
+const { data } = useListOrders();
+```
 
-export async function syncOrder(orderNumber: string): Promise<StatusResponse> {
-  return api<StatusResponse>(`/orders/${orderNumber}/sync`, { method: "POST" });
-}
+For backward compatibility, `@/lib/api.ts` re-exports generated types and wrapper functions.
 
-export async function selectColoringVersion(imageId: number, versionId: number): Promise<StatusResponse> {
-  return api<StatusResponse>(`/images/${imageId}/select-coloring/${versionId}`, { method: "PUT" });
+### Generated Query Keys (MANDATORY)
+
+**ALWAYS** use generated query key functions for both `useQuery` and cache invalidation. This ensures type-safe, consistent query keys across the entire codebase.
+
+```typescript
+import { getListOrdersQueryKey, getGetOrderQueryKey } from "@/api/generated/orders/orders";
+
+// In useQuery - ALWAYS use generated key
+const { data } = useQuery({
+  queryKey: getGetOrderQueryKey(shopifyId),
+  queryFn: () => fetchOrder(shopifyId),
+});
+
+// In mutations - ALWAYS use generated key for invalidation
+const mutation = useMutation({
+  mutationFn: () => syncOrder(shopifyId),
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
+    queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
+  },
+});
+```
+
+**WARNING**: Using different query keys (e.g., `["order", id]` vs `getGetOrderQueryKey(id)`) will cause cache misses and bugs. TypeScript cannot catch this - the generated keys ensure consistency.
+
+### Mercure Event Types
+
+Use generated event types from SDK (do NOT define manually):
+
+```typescript
+import type {
+  ImageStatusEvent,
+  ImageUpdateEvent,
+  ListUpdateEvent,
+  OrderUpdateEvent,
+} from "@/api/generated/schemas";
+
+// Union type for all events
+type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | OrderUpdateEvent;
+
+const event = data as MercureEvent;
+if (event.type === "image_status") {
+  // TypeScript knows event.image_id exists
 }
 ```
 
+### SDK Regeneration
+
+- Run `npm run generate:api` after backend API changes
+- SDK is auto-generated on `docker-compose up`
+- Generated files are in `src/api/generated/` (gitignored)
+
 ### API URL Configuration
 
-`VITE_API_URL` environment variable contains the **full base URL including `/api/v1`**:
-- Local dev (with Vite proxy): `/api/v1` (default)
-- Production/Docker: `http://backend:8000/api/v1`
+`VITE_API_URL` environment variable is the **base URL only** (without `/api/v1`):
+- Local dev (with Vite proxy): `""` (empty string, default)
+- Production/Docker: `http://backend:8000`
+
+The Orval-generated code already includes `/api/v1` in the endpoint paths.
+
+`ORVAL_API_URL` controls where Orval fetches the OpenAPI schema:
+- Local dev: Not set (defaults to `http://localhost:8000/openapi.json`)
+- Docker: `http://backend:8000/openapi.json`
 
 ### HTTP Methods
 
@@ -150,7 +202,7 @@ export async function selectColoringVersion(imageId: number, versionId: number):
 - Use `useQuery` for data fetching
 - Use `useMutation` for modifications
 - Invalidate queries on mutation success
-- Use query keys consistently: `["order", orderNumber]`, `["orders"]`
+- **ALWAYS** use generated query key functions (see "Generated Query Keys" section above)
 
 ### Local State
 
@@ -165,11 +217,11 @@ export async function selectColoringVersion(imageId: number, versionId: number):
 ```typescript
 interface ImageCardProps {
   image: OrderImage;
-  orderNumber: string;
+  shopifyId: number;
   onPreview?: (src: string, alt: string) => void;
 }
 
-function ImageCard({ image, orderNumber, onPreview }: ImageCardProps) {
+function ImageCard({ image, shopifyId, onPreview }: ImageCardProps) {
   // ...
 }
 ```

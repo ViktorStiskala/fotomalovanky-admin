@@ -87,7 +87,7 @@ class ImageDownloadService:
     async def _download_with_retry(
         self,
         url: str,
-        order_id: int,
+        shopify_id: int,
         line_item_id: int,
         position: int,
     ) -> str:
@@ -95,7 +95,7 @@ class ImageDownloadService:
 
         Args:
             url: Source URL of the image
-            order_id: Order ID for path organization
+            shopify_id: Shopify order ID for path organization
             line_item_id: Line item ID for path organization
             position: Image position (1-4)
 
@@ -107,7 +107,7 @@ class ImageDownloadService:
             httpx.RequestError: On network errors (after retries exhausted)
         """
         extension = self._get_extension_from_url(url)
-        key = self.storage.get_original_image_key(order_id, line_item_id, position, extension)
+        key = self.storage.get_original_image_key(shopify_id, line_item_id, position, extension)
 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=60.0, follow_redirects=True)
@@ -123,12 +123,12 @@ class ImageDownloadService:
             )
             return file_path
 
-    async def download_single_image(self, image: Image, order_id: int) -> bool:
+    async def download_single_image(self, image: Image, shopify_id: int) -> bool:
         """Download a single image and update its database record.
 
         Args:
             image: Image model instance to download
-            order_id: Order ID for path organization
+            shopify_id: Shopify order ID for path organization
 
         Returns:
             True if download succeeded, False otherwise
@@ -138,7 +138,7 @@ class ImageDownloadService:
         try:
             local_path = await self._download_with_retry(
                 url=image.original_url,
-                order_id=order_id,
+                shopify_id=shopify_id,
                 line_item_id=image.line_item_id,
                 position=image.position,
             )
@@ -186,6 +186,7 @@ class ImageDownloadService:
         import asyncio
 
         assert order.id is not None, "Order ID cannot be None"
+        shopify_id = order.shopify_id
 
         # Collect all images that need downloading
         images_to_download = [
@@ -196,18 +197,18 @@ class ImageDownloadService:
         ]
 
         if not images_to_download:
-            logger.info("No images to download", order_id=order.id)
+            logger.info("No images to download", shopify_id=shopify_id)
             return DownloadResult(total=0, succeeded=0, failed=0)
 
         logger.info(
             "Downloading images for order",
-            order_id=order.id,
+            shopify_id=shopify_id,
             image_count=len(images_to_download),
         )
 
         # Execute all downloads in parallel
         results = await asyncio.gather(
-            *[self.download_single_image(img, order.id) for img in images_to_download],
+            *[self.download_single_image(img, shopify_id) for img in images_to_download],
             return_exceptions=True,
         )
 
@@ -217,7 +218,7 @@ class ImageDownloadService:
 
         logger.info(
             "Order image downloads complete",
-            order_id=order.id,
+            shopify_id=shopify_id,
             total=len(images_to_download),
             succeeded=succeeded,
             failed=failed,

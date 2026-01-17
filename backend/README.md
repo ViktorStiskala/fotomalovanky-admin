@@ -128,16 +128,16 @@ Status flow for SVG vectorization (Vectorizer.ai):
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/v1/orders` | List orders |
-| GET | `/api/v1/orders/{order_number}` | Get order detail |
-| GET | `/api/v1/orders/{order_number}/images/{image_id}` | Get single image |
-| POST | `/api/v1/orders/{order_number}/sync` | Re-sync from Shopify |
+| GET | `/api/v1/orders/{shopify_id}` | Get order detail |
+| GET | `/api/v1/orders/{shopify_id}/images/{image_id}` | Get single image |
+| POST | `/api/v1/orders/{shopify_id}/sync` | Re-sync from Shopify |
 | POST | `/api/v1/orders/fetch-from-shopify` | Import recent orders |
 
 ### Coloring Generation
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/orders/{order_number}/generate-coloring` | Generate for all images |
+| POST | `/api/v1/orders/{shopify_id}/generate-coloring` | Generate for all images |
 | POST | `/api/v1/images/{image_id}/generate-coloring` | Generate for single image |
 | GET | `/api/v1/images/{image_id}/coloring-versions` | List versions |
 | POST | `/api/v1/coloring-versions/{version_id}/retry` | Retry failed |
@@ -146,7 +146,7 @@ Status flow for SVG vectorization (Vectorizer.ai):
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/orders/{order_number}/generate-svg` | Generate for all images |
+| POST | `/api/v1/orders/{shopify_id}/generate-svg` | Generate for all images |
 | POST | `/api/v1/images/{image_id}/generate-svg` | Generate for single image |
 | GET | `/api/v1/images/{image_id}/svg-versions` | List versions |
 | POST | `/api/v1/svg-versions/{version_id}/retry` | Retry failed |
@@ -175,7 +175,7 @@ Sent when order list changes. Triggers full list refetch.
 Sent for structural changes (COMPLETED, ERROR, new version).
 
 ```json
-{"type": "order_update", "order_number": "1270"}
+{"type": "order_update", "shopify_id": 16828028518749}
 ```
 
 ### `image_status`
@@ -185,7 +185,7 @@ Sent during processing for granular status updates.
 ```json
 {
   "type": "image_status",
-  "order_number": "1270",
+  "shopify_id": 16828028518749,
   "image_id": 123,
   "status_type": "coloring",
   "version_id": 456,

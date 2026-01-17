@@ -4,7 +4,11 @@
     "version": "0.1.0",
     "type": "module",
     "scripts": {
+        "generate:api": "orval",
+        "generate:api:watch": "orval --watch",
+        "generate:icons": "tsx scripts/generateIcons.ts && prettier --write src/components/icons/*.tsx",
         "dev": "vite",
+        "prebuild": "npm run generate:api",
         "build": "tsc -b && vite build",
         "preview": "vite preview",
         "typecheck": "tsc --noEmit",
@@ -12,6 +16,7 @@
         "lint:fix": "eslint src --ext .ts,.tsx --fix",
         "format": "prettier --write \"src/**/*.{ts,tsx,json,css}\"",
         "format:check": "prettier --check \"src/**/*.{ts,tsx,json,css}\"",
+        "precheck": "npm run generate:icons",
         "check": "npm run typecheck && npm run lint && npm run format:check"
     },
     "dependencies": {
@@ -39,9 +44,11 @@
         "eslint-plugin-react-hooks": "^5.1.0",
         "eslint-plugin-react-refresh": "^0.4.16",
         "globals": "^15.14.0",
+        "orval": "^8.0.1",
         "postcss": "^8.4.49",
         "prettier": "^3.4.2",
         "tailwindcss": "^3.4.17",
+        "tsx": "^4.19.2",
         "typescript": "~5.7.2",
         "typescript-eslint": "^8.18.1",
         "vite": "^6.0.5"

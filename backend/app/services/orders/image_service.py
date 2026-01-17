@@ -14,7 +14,6 @@ from app.services.coloring.exceptions import (
     VersionOwnershipError,
 )
 from app.services.orders.exceptions import ImageNotFound, ImageNotFoundInOrder, OrderNotFound
-from app.utils.shopify_helpers import normalize_order_number
 
 logger = structlog.get_logger(__name__)
 
@@ -25,12 +24,10 @@ class OrderImageService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_order_image(self, *, order_number: str, image_id: int) -> Image:
+    async def get_order_image(self, *, shopify_id: int, image_id: int) -> Image:
         """Get image with versions, verifying it belongs to the order."""
-        normalized = normalize_order_number(order_number)
-
         # Verify order exists
-        order_statement = select(Order).where(Order.shopify_order_number == normalized)
+        order_statement = select(Order).where(Order.shopify_id == shopify_id)
         order_result = await self.session.execute(order_statement)
         order = order_result.scalars().first()
         if not order:

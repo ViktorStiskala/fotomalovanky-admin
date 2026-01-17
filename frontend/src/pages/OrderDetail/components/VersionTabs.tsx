@@ -97,7 +97,7 @@ export function VersionTabs({
                     })
                   }
                 >
-                  <Icon name="fullscreen" className="w-5 h-5" />
+                  <Icon name="mdi-fullscreen" className="w-5 h-5" />
                 </button>
               </>
             ) : (
@@ -140,7 +140,7 @@ export function VersionTabs({
                       {status.label}
                       {isError && (
                         <Icon
-                          name="refresh"
+                          name="mdi-refresh"
                           className={`w-3.5 h-3.5 cursor-pointer hover:scale-125 transition-transform ${isRetryingColoring ? "animate-spin" : ""}`}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -178,7 +178,7 @@ export function VersionTabs({
                     })
                   }
                 >
-                  <Icon name="fullscreen" className="w-5 h-5" />
+                  <Icon name="mdi-fullscreen" className="w-5 h-5" />
                 </button>
               </>
             ) : (
@@ -229,7 +229,7 @@ export function VersionTabs({
                       {status.label}
                       {isError && (
                         <Icon
-                          name="refresh"
+                          name="mdi-refresh"
                           className={`w-3.5 h-3.5 cursor-pointer hover:scale-125 transition-transform ${isRetryingSvg ? "animate-spin" : ""}`}
                           onClick={(e) => {
                             e.stopPropagation();

@@ -1,15 +1,6 @@
-/**
- * Mercure SSE event data structure
- */
-export interface MercureEvent {
-  type: "order_update" | "list_update" | "image_status" | "image_update";
-  order_number?: string;
-  // For image_status events:
-  image_id?: number;
-  status_type?: "coloring" | "svg";
-  version_id?: number;
-  status?: string;
-}
+// MercureEvent types are now generated from the backend schema.
+// Import from @/api/generated/schemas:
+// import type { ImageStatusEvent, ImageUpdateEvent, ListUpdateEvent, OrderUpdateEvent } from "@/api/generated/schemas";
 
 /**
  * Order status display configuration

@@ -41,7 +41,7 @@ async def _download_order_images_async(order_id: int) -> None:
     mercure = MercureService()
     storage = LocalStorageService()
 
-    logger.info("Starting image download task", order_id=order_id)
+    logger.info("Starting image download task", internal_order_id=order_id)
 
     async with task_db_session() as session:
         # Get order from database with line items and images
@@ -54,17 +54,18 @@ async def _download_order_images_async(order_id: int) -> None:
         order = result.scalars().first()
 
         if not order:
-            logger.error("Order not found", order_id=order_id)
+            logger.error("Order not found", internal_order_id=order_id)
             return
 
         assert order.id is not None, "Order ID cannot be None after database fetch"
-        order_number = order.clean_order_number if order.shopify_order_number else str(order.id)
+        shopify_id = order.shopify_id
+        logger.info("Downloading images for order", shopify_id=shopify_id)
 
         try:
             # Update status to DOWNLOADING
             order.status = OrderStatus.DOWNLOADING
             await session.commit()
-            await mercure.publish_order_update(order_number)
+            await mercure.publish_order_update(shopify_id)
 
             # Use ImageDownloadService for downloads
             download_service = ImageDownloadService(session, storage)
@@ -82,11 +83,11 @@ async def _download_order_images_async(order_id: int) -> None:
                 order.status = OrderStatus.READY_FOR_REVIEW
 
             await session.commit()
-            await mercure.publish_order_update(order_number)
+            await mercure.publish_order_update(shopify_id)
 
             logger.info(
                 "Image download task complete",
-                order_id=order_id,
+                shopify_id=shopify_id,
                 status=order.status.value,
                 total=download_result.total,
                 succeeded=download_result.succeeded,
@@ -94,8 +95,8 @@ async def _download_order_images_async(order_id: int) -> None:
             )
 
         except Exception as e:
-            logger.error("Image download task failed", order_id=order_id, error=str(e))
+            logger.error("Image download task failed", shopify_id=shopify_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await mercure.publish_order_update(order_number)
+            await mercure.publish_order_update(shopify_id)
             raise

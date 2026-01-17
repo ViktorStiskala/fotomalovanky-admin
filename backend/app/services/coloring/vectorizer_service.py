@@ -20,7 +20,6 @@ from app.services.coloring.exceptions import (
     VersionNotInErrorState,
 )
 from app.services.orders.exceptions import ImageNotFound, OrderNotFound
-from app.utils.shopify_helpers import normalize_order_number
 
 logger = structlog.get_logger(__name__)
 
@@ -95,7 +94,7 @@ class VectorizerService:
 
     async def create_versions_for_order(
         self,
-        order_number: str,
+        shopify_id: int,
         *,
         shape_stacking: str = "stacked",
         group_by: str = "color",
@@ -104,8 +103,6 @@ class VectorizerService:
 
         Returns list of created version IDs. Caller is responsible for dispatching tasks.
         """
-        normalized = normalize_order_number(order_number)
-
         # Get order with all images, coloring versions, and their SVG versions
         statement = (
             select(Order)
@@ -115,7 +112,7 @@ class VectorizerService:
                 .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
                 .selectinload(ColoringVersion.svg_versions)  # type: ignore[arg-type]
             )
-            .where(Order.shopify_order_number == normalized)
+            .where(Order.shopify_id == shopify_id)
         )
         result = await self.session.execute(statement)
         order = result.scalars().first()
@@ -170,7 +167,7 @@ class VectorizerService:
 
         logger.info(
             "Created SVG versions for order",
-            order_number=order_number,
+            shopify_id=shopify_id,
             count=len(version_ids),
         )
 

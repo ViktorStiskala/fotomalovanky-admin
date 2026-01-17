@@ -47,6 +47,9 @@ frontend/dist/
 frontend/build/
 *.tsbuildinfo
 
+# Generated SDK
+frontend/src/api/generated/
+
 # Testing
 .coverage
 htmlcov/

@@ -47,9 +47,9 @@ class OrderService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_order(self, order_number: str) -> Order:
+    async def get_order(self, shopify_id: int) -> Order:
         """Business logic here, raises custom exceptions."""
-        order = await self._fetch_order(order_number)
+        order = await self._fetch_order(shopify_id)
         if not order:
             raise OrderNotFound()
         return order
@@ -58,14 +58,29 @@ class OrderService:
 ### API Route Pattern
 
 ```python
-@router.get("/orders/{order_number}")
-async def get_order(order_number: str, service: OrderServiceDep) -> OrderResponse:
+@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
+async def get_order(shopify_id: int, service: OrderServiceDep) -> OrderDetailResponse:
     try:
-        order = await service.get_order(order_number)
-        return OrderResponse.from_model(order)
+        order = await service.get_order(shopify_id)
+        return OrderDetailResponse.from_model(order)
     except OrderNotFound:
         raise HTTPException(404, "Order not found")
 ```
+
+### Operation IDs (MANDATORY)
+
+**ALL** FastAPI endpoints MUST have explicit `operation_id` for clean SDK generation:
+
+```python
+@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
+```
+
+Naming convention:
+- GET single resource: `get{Resource}` (e.g., `getOrder`, `getOrderImage`)
+- GET list: `list{Resources}` (e.g., `listOrders`, `listColoringVersions`)
+- POST action: `{action}{Resource}` (e.g., `syncOrder`, `generateImageColoring`)
+- PUT update: `{action}{Resource}` (e.g., `selectColoringVersion`)
+- POST retry: `retry{Resource}` (e.g., `retryColoringVersion`)
 
 ## Dramatiq Tasks Architecture (MANDATORY)
 
@@ -135,17 +150,16 @@ app/tasks/
 ```python
 # BAD - importing from package __init__.py
 from app.services import ColoringService
-from app.utils import normalize_order_number
 
 # GOOD - explicit imports from actual modules
 from app.services.coloring.coloring_service import ColoringService
-from app.utils.shopify_helpers import normalize_order_number
+from app.utils.shopify_helpers import build_customer_name
 from app.services.external.mercure import MercureService
 from app.services.storage.storage_service import LocalStorageService
 
 # Using external services (always instantiate as classes)
 mercure = MercureService()
-await mercure.publish_order_update(order_number)
+await mercure.publish_order_update(shopify_id)
 
 storage = LocalStorageService()
 file_path = await storage.write(key, data)
@@ -294,6 +308,24 @@ async def _create_version_with_retry(self, ...) -> ColoringVersion:
                 raise
     raise RuntimeError("Failed to create version after retries")
 ```
+
+## Mercure Event Schemas (MANDATORY)
+
+Mercure events MUST use typed Pydantic models defined in `app/models/events.py`:
+
+- **NEVER** construct event JSON manually
+- **ALWAYS** use `event.model_dump_json()` for serialization
+- Event types: `OrderUpdateEvent`, `ListUpdateEvent`, `ImageUpdateEvent`, `ImageStatusEvent`
+
+```python
+from app.models.events import OrderUpdateEvent
+
+event = OrderUpdateEvent(type="order_update", shopify_id=shopify_id)
+await self._publish(topics=[...], data=event.model_dump_json())
+```
+
+The event schemas are exposed via `/api/v1/events/schema` endpoint for OpenAPI generation,
+enabling type-safe frontend event handling through the generated SDK.
 
 ## Testing Considerations
 

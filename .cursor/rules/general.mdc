@@ -19,11 +19,18 @@ alwaysApply: true
 - `uv run alembic upgrade head` - Run database migrations (requires `DATABASE_URL` in `.env`)
 - `uv run alembic revision --autogenerate -m "description"` - Create new migration
 
+### Available Scripts (Frontend)
+- `npm run generate:api` - Regenerate TypeScript SDK from backend OpenAPI schema
+- `npm run generate:api:watch` - Watch mode for SDK regeneration
+- `npm run dev` - Start development server
+- `npm run check` - Run all checks (typecheck, lint, format)
+
 ### Frontend (TypeScript/React)
 - **MUST** use `npm` as package manager
 - **MUST** use TypeScript strict mode
 - **MUST** use ESLint + Prettier for linting/formatting
 - **MUST** use Vite as build tool
+- **MUST** use Orval-generated SDK for API calls (never manual fetch)
 
 ## Framework & Library Constraints
 
@@ -43,7 +50,7 @@ alwaysApply: true
     - Use `ShopifyService` class for API calls
 - **Utilities:** Common helpers in `app/utils/`:
     - `datetime_utils.py` - timezone conversions (`to_api_timezone`)
-    - `shopify_helpers.py` - `build_customer_name()`, `normalize_order_number()`
+    - `shopify_helpers.py` - `build_customer_name()`
 
 ### Frontend
 - **Framework:** React 18+ with TypeScript
@@ -70,6 +77,12 @@ alwaysApply: true
     - Required for running `uv run alembic` commands locally
 - **Inside Docker containers**: `DATABASE_URL` is set automatically via docker-compose
 
+## SDK Generation
+- `ORVAL_API_URL` - URL to fetch OpenAPI schema (Docker: `http://backend:8000/openapi.json`)
+- SDK is regenerated automatically when frontend container starts
+- Backend must be healthy before SDK generation (uses healthcheck)
+- Generated files are in `frontend/src/api/generated/` (gitignored)
+
 ## Webhook Handling
 - **MUST** verify Shopify HMAC signature (`X-Shopify-Hmac-Sha256`) before processing
 - **MUST** return `200 OK` immediately to Shopify before starting background processing
@@ -79,25 +92,25 @@ alwaysApply: true
 - **DO NOT** send full data payloads via SSE
 - **MUST** emit Mercure events on **every** state change using `MercureService`:
     - New order created (webhook, manual fetch) → `mercure.publish_order_list_update()`
-    - Order status changed → `mercure.publish_order_update(order_number)`
-    - Images downloaded/updated → `mercure.publish_order_update(order_number)`
+    - Order status changed → `mercure.publish_order_update(shopify_id)`
+    - Images downloaded/updated → `mercure.publish_order_update(shopify_id)`
     - Any data modification visible to users → appropriate Mercure publish
 - **Usage:**
     ```python
     from app.services.external.mercure import MercureService
     mercure = MercureService()
-    await mercure.publish_order_update(order_number)
+    await mercure.publish_order_update(shopify_id)
     ```
 - **Pattern:**
     1. Backend updates PostgreSQL
     2. Backend posts lightweight ping to Mercure topic:
         - List updates: `{"type": "list_update"}` to `orders` topic
-        - Order updates: `{"type": "order_update", "order_number": "1270"}` to `orders` and `orders/{order_number}` topics
+        - Order updates: `{"type": "order_update", "shopify_id": 16828028518749}` to `orders` and `orders/{shopify_id}` topics
     3. Frontend receives ping via SSE (hooks in `frontend/src/hooks/`)
     4. Frontend invalidates TanStack Query cache → triggers refetch from API
 - **Frontend hooks:**
     - `useOrderListEvents()` - subscribes to `orders` topic for list view
-    - `useOrderEvents(orderNumber)` - subscribes to `orders/{orderNumber}` topic for detail view
+    - `useOrderEvents(shopifyId)` - subscribes to `orders/{shopifyId}` topic for detail view
 
 ## Quality & Testing (MANDATORY)
 

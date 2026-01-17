@@ -7,7 +7,7 @@ function App() {
     <div className="min-h-screen bg-background">
       <Routes>
         <Route path="/" element={<OrderList />} />
-        <Route path="/orders/:orderNumber" element={<OrderDetail />} />
+        <Route path="/orders/:shopifyId" element={<OrderDetail />} />
       </Routes>
     </div>
   );

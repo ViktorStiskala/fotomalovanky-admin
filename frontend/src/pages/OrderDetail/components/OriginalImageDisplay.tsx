@@ -42,7 +42,7 @@ export function OriginalImageDisplay({
               })
             }
           >
-            <Icon name="fullscreen" className="w-5 h-5" />
+            <Icon name="mdi-fullscreen" className="w-5 h-5" />
           </button>
         </>
       ) : null}

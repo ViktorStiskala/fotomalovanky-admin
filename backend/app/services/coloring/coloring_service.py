@@ -23,7 +23,6 @@ from app.services.orders.exceptions import (
     ImageNotFound,
     OrderNotFound,
 )
-from app.utils.shopify_helpers import normalize_order_number
 
 logger = structlog.get_logger(__name__)
 
@@ -93,7 +92,7 @@ class ColoringService:
 
     async def create_versions_for_order(
         self,
-        order_number: str,
+        shopify_id: int,
         *,
         megapixels: float = 1.0,
         steps: int = 4,
@@ -102,8 +101,6 @@ class ColoringService:
 
         Returns list of created version IDs. Caller is responsible for dispatching tasks.
         """
-        normalized = normalize_order_number(order_number)
-
         # Get order with all images and their coloring versions
         statement = (
             select(Order)
@@ -112,7 +109,7 @@ class ColoringService:
                 .selectinload(LineItem.images)  # type: ignore[arg-type]
                 .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
             )
-            .where(Order.shopify_order_number == normalized)
+            .where(Order.shopify_id == shopify_id)
         )
         result = await self.session.execute(statement)
         order = result.scalars().first()
@@ -162,7 +159,7 @@ class ColoringService:
 
         logger.info(
             "Created coloring versions for order",
-            order_number=order_number,
+            shopify_id=shopify_id,
             count=len(version_ids),
         )
 

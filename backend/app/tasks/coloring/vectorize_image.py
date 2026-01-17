@@ -83,7 +83,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
         assert image.id is not None
         image_id = image.id  # Capture for closures
 
-        # Load line item to get order_id
+        # Load line item and order to get shopify_id
         line_item = await session.get(LineItem, image.line_item_id)
         if not line_item:
             logger.error("LineItem not found", line_item_id=image.line_item_id)
@@ -91,15 +91,18 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             return
 
-        order_id = line_item.order_id
-
-        # Get order number for Mercure
-        order = await session.get(Order, order_id)
-        order_number = order.clean_order_number if order else str(order_id)
+        # Get order for shopify_id (used for Mercure and storage paths)
+        order = await session.get(Order, line_item.order_id)
+        if not order:
+            logger.error("Order not found", internal_order_id=line_item.order_id)
+            svg_version.status = SvgProcessingStatus.ERROR
+            await session.commit()
+            return
+        shopify_id = order.shopify_id
 
         # Publish initial PROCESSING status
         await mercure.publish_image_status(
-            order_number=order_number,
+            shopify_id=shopify_id,
             image_id=image_id,
             status_type="svg",
             version_id=svg_version_id,
@@ -111,7 +114,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             svg_version.status = new_status
             await session.commit()
             await mercure.publish_image_status(
-                order_number=order_number,
+                shopify_id=shopify_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -131,7 +134,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
 
             # Generate storage key for output
             output_key = storage.get_svg_key(
-                order_id=order_id,
+                shopify_id=shopify_id,
                 line_item_id=image.line_item_id,
                 position=image.position,
                 version=svg_version.version,
@@ -162,7 +165,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
 
             # Publish image_status for COMPLETED
             await mercure.publish_image_status(
-                order_number=order_number,
+                shopify_id=shopify_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -186,7 +189,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             # Publish image_status for ERROR
             await mercure.publish_image_status(
-                order_number=order_number,
+                shopify_id=shopify_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,
@@ -205,7 +208,7 @@ async def _vectorize_image_async(svg_version_id: int) -> None:
             await session.commit()
             # Publish image_status for ERROR
             await mercure.publish_image_status(
-                order_number=order_number,
+                shopify_id=shopify_id,
                 image_id=image_id,
                 status_type="svg",
                 version_id=svg_version_id,

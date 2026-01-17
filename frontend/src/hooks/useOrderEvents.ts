@@ -1,8 +1,21 @@
 import { useCallback } from "react";
 import { queryClient } from "@/lib/queryClient";
 import { useMercure } from "./useMercure";
-import { fetchImage, OrderDetail, OrderImage } from "@/lib/api";
-import type { MercureEvent } from "@/types";
+import {
+  getGetOrderQueryKey,
+  getListOrdersQueryKey,
+  getOrderImage,
+} from "@/api/generated/orders/orders";
+import type {
+  ImageStatusEvent,
+  ImageUpdateEvent,
+  ListUpdateEvent,
+  OrderDetailResponse,
+  OrderUpdateEvent,
+} from "@/api/generated/schemas";
+
+// Union type for all Mercure events
+type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | OrderUpdateEvent;
 
 /**
  * Custom hook that subscribes to Mercure SSE events for a specific order.
@@ -15,48 +28,58 @@ import type { MercureEvent } from "@/types";
  * This enables real-time status updates as background workers process the order,
  * with minimal network overhead during frequent status changes.
  *
- * @param orderNumber - The Shopify order number (e.g., "1270")
+ * @param shopifyId - The Shopify order ID (numeric)
  */
-export function useOrderEvents(orderNumber: string): void {
+export function useOrderEvents(shopifyId: number): void {
   const handleMessage = useCallback(
     async (data: unknown) => {
       const event = data as MercureEvent;
-      console.log(`[Mercure] Order ${orderNumber} event received:`, event);
+      console.log(`[Mercure] Order ${shopifyId} event received:`, event);
 
-      if ((event.type === "image_status" || event.type === "image_update") && event.image_id) {
+      if (event.type === "image_status" || event.type === "image_update") {
         // Efficient update: fetch only the updated image
         try {
-          const imageData = await fetchImage(orderNumber, event.image_id);
+          const response = await getOrderImage(shopifyId, event.image_id);
+
+          // Handle the response (may have status/data structure from Orval)
+          const imageData = "data" in response ? response.data : response;
 
           // Update the cache by replacing just this image in the order data
-          queryClient.setQueryData<OrderDetail>(["order", orderNumber], (oldData) => {
-            if (!oldData) return oldData;
+          queryClient.setQueryData(
+            getGetOrderQueryKey(shopifyId),
+            (oldData: { data: OrderDetailResponse } | OrderDetailResponse | undefined) => {
+              if (!oldData) return oldData;
 
-            return {
-              ...oldData,
-              line_items: oldData.line_items.map((li) => ({
-                ...li,
-                images: li.images.map((img: OrderImage) =>
-                  img.id === event.image_id ? imageData : img
-                ),
-              })),
-            };
-          });
+              // Handle both wrapped and unwrapped response types
+              const orderData = "data" in oldData ? oldData.data : oldData;
+
+              const updatedOrderData = {
+                ...orderData,
+                line_items: orderData.line_items.map((li) => ({
+                  ...li,
+                  images: li.images.map((img) => (img.id === event.image_id ? imageData : img)),
+                })),
+              };
+
+              // Return in the same shape as the input
+              return "data" in oldData ? { ...oldData, data: updatedOrderData } : updatedOrderData;
+            }
+          );
         } catch (error) {
           console.error("[Mercure] Failed to fetch image:", error);
           // Fallback: invalidate the whole order query
-          queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
+          queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
         }
       } else {
-        // For order_update events or unknown types: invalidate to trigger full refetch
-        queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
+        // For order_update events or list_update: invalidate to trigger full refetch
+        queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyId) });
 
         // Also invalidate the orders list in case status changed
-        queryClient.invalidateQueries({ queryKey: ["orders"] });
+        queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       }
     },
-    [orderNumber]
+    [shopifyId]
   );
 
-  useMercure(`orders/${orderNumber}`, handleMessage, !!orderNumber);
+  useMercure(`orders/${shopifyId}`, handleMessage, shopifyId > 0);
 }

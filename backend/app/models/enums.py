@@ -29,9 +29,14 @@ class ColoringProcessingStatus(StrEnum):
 
     @classmethod
     def intermediate_states(cls) -> frozenset[Self]:
-        """States that indicate task was interrupted mid-processing."""
+        """States that indicate task was interrupted mid-processing.
+
+        Includes QUEUED because if dramatiq never picks up the task
+        (e.g., worker was down, Redis issue), it needs to be re-dispatched.
+        """
         return frozenset(
             {
+                cls.QUEUED,
                 cls.PROCESSING,
                 cls.RUNPOD_SUBMITTING,
                 cls.RUNPOD_SUBMITTED,
@@ -53,9 +58,14 @@ class SvgProcessingStatus(StrEnum):
 
     @classmethod
     def intermediate_states(cls) -> frozenset[Self]:
-        """States that indicate task was interrupted mid-processing."""
+        """States that indicate task was interrupted mid-processing.
+
+        Includes QUEUED because if dramatiq never picks up the task
+        (e.g., worker was down, Redis issue), it needs to be re-dispatched.
+        """
         return frozenset(
             {
+                cls.QUEUED,
                 cls.PROCESSING,
                 cls.VECTORIZER_PROCESSING,
             }

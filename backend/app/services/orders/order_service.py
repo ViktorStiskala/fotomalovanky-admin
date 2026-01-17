@@ -19,7 +19,7 @@ from app.models.coloring import ColoringVersion
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
 from app.services.orders.exceptions import OrderNotFound
-from app.utils.shopify_helpers import build_customer_name, normalize_order_number
+from app.utils.shopify_helpers import build_customer_name
 
 if TYPE_CHECKING:
     from app.services.external.shopify_client.graphql_client.list_recent_orders import (
@@ -60,9 +60,8 @@ class OrderService:
 
         return orders, total
 
-    async def get_order(self, order_number: str) -> Order:
-        """Get order by number with full eager loading."""
-        normalized = normalize_order_number(order_number)
+    async def get_order(self, shopify_id: int) -> Order:
+        """Get order by Shopify ID with full eager loading."""
         statement = (
             select(Order)
             .options(
@@ -71,7 +70,7 @@ class OrderService:
                 .selectinload(Image.coloring_versions)  # type: ignore[arg-type]
                 .selectinload(ColoringVersion.svg_versions)  # type: ignore[arg-type]
             )
-            .where(Order.shopify_order_number == normalized)
+            .where(Order.shopify_id == shopify_id)
         )
         result = await self.session.execute(statement)
         order = result.scalars().first()
@@ -79,23 +78,21 @@ class OrderService:
             raise OrderNotFound()
         return order
 
-    async def get_order_basic(self, order_number: str) -> Order:
-        """Get order by number without eager loading (for simple checks)."""
-        normalized = normalize_order_number(order_number)
-        statement = select(Order).where(Order.shopify_order_number == normalized)
+    async def get_order_basic(self, shopify_id: int) -> Order:
+        """Get order by Shopify ID without eager loading (for simple checks)."""
+        statement = select(Order).where(Order.shopify_id == shopify_id)
         result = await self.session.execute(statement)
         order = result.scalars().first()
         if not order:
             raise OrderNotFound()
         return order
 
-    async def prepare_sync(self, order_number: str) -> Order:
+    async def prepare_sync(self, shopify_id: int) -> Order:
         """Reset order status for re-processing.
 
         Returns the updated order. Caller is responsible for dispatching the task.
         """
-        normalized = normalize_order_number(order_number)
-        statement = select(Order).where(Order.shopify_order_number == normalized)
+        statement = select(Order).where(Order.shopify_id == shopify_id)
         result = await self.session.execute(statement)
         order = result.scalars().first()
         if not order:

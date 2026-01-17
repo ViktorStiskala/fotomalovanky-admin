@@ -19,7 +19,7 @@ export function ImagePreviewDialog({ image, onClose }: ImagePreviewDialogProps) 
             className="absolute top-3 right-3 p-1.5 bg-white/20 hover:bg-white/30 rounded text-white z-10"
             onClick={onClose}
           >
-            <Icon name="close-box-outline" className="w-6 h-6" />
+            <Icon name="mdi-close-box-outline" className="w-6 h-6" />
           </button>
           {image && (
             <img

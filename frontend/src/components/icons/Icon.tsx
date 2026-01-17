@@ -4,7 +4,7 @@ import type { SVGProps } from "react";
  * Available icon names.
  * AUTO-GENERATED - DO NOT EDIT MANUALLY
  */
-export type IconName = "placeholder";
+export type IconName = "mdi-close-box-outline" | "mdi-fullscreen" | "mdi-refresh";
 
 interface IconProps extends SVGProps<SVGSVGElement> {
   name: IconName;

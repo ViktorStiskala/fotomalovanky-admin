@@ -27,9 +27,9 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["svg"])
 
 
-@router.post("/orders/{order_number}/generate-svg", response_model=GenerateSvgResponse)
+@router.post("/orders/{shopify_id}/generate-svg", response_model=GenerateSvgResponse, operation_id="generateOrderSvg")
 async def generate_order_svg(
-    order_number: str,
+    shopify_id: int,
     service: VectorizerServiceDep,
     request: GenerateSvgRequest | None = None,
 ) -> GenerateSvgResponse:
@@ -38,7 +38,7 @@ async def generate_order_svg(
 
     try:
         version_ids = await service.create_versions_for_order(
-            order_number,
+            shopify_id,
             shape_stacking=req.shape_stacking,
             group_by=req.group_by,
         )
@@ -60,7 +60,7 @@ async def generate_order_svg(
         )
 
 
-@router.post("/images/{image_id}/generate-svg", response_model=SvgVersionResponse)
+@router.post("/images/{image_id}/generate-svg", response_model=SvgVersionResponse, operation_id="generateImageSvg")
 async def generate_image_svg(
     image_id: int,
     service: VectorizerServiceDep,
@@ -84,7 +84,7 @@ async def generate_image_svg(
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.line_item.order.shopify_id, image_id)
 
         return SvgVersionResponse.from_model(svg_version)
     except ImageNotFound:
@@ -96,7 +96,7 @@ async def generate_image_svg(
         )
 
 
-@router.post("/svg-versions/{version_id}/retry", response_model=SvgVersionResponse)
+@router.post("/svg-versions/{version_id}/retry", response_model=SvgVersionResponse, operation_id="retrySvgVersion")
 async def retry_svg_version(
     version_id: int,
     service: VectorizerServiceDep,

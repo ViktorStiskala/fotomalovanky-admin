@@ -1,5 +1,8 @@
 FROM node:22-slim
 
+# Install curl for healthchecks and fetching OpenAPI schema
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 

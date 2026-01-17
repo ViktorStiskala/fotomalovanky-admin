@@ -16,10 +16,10 @@ import {
 
 interface ImageCardProps {
   image: OrderImage;
-  orderNumber: string;
+  shopifyId: number;
 }
 
-export function ImageCard({ image, orderNumber }: ImageCardProps) {
+export function ImageCard({ image, shopifyId }: ImageCardProps) {
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
 
   const coloringVersions = image.versions.coloring;
@@ -45,7 +45,7 @@ export function ImageCard({ image, orderNumber }: ImageCardProps) {
     retrySvgMutation,
   } = useImageMutations({
     imageId: image.id,
-    orderNumber,
+    shopifyId,
   });
 
   return (

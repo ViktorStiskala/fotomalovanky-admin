@@ -30,9 +30,13 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["coloring"])
 
 
-@router.post("/orders/{order_number}/generate-coloring", response_model=GenerateColoringResponse)
+@router.post(
+    "/orders/{shopify_id}/generate-coloring",
+    response_model=GenerateColoringResponse,
+    operation_id="generateOrderColoring",
+)
 async def generate_order_coloring(
-    order_number: str,
+    shopify_id: int,
     service: ColoringServiceDep,
     request: GenerateColoringRequest | None = None,
 ) -> GenerateColoringResponse:
@@ -41,7 +45,7 @@ async def generate_order_coloring(
 
     try:
         version_ids = await service.create_versions_for_order(
-            order_number,
+            shopify_id,
             megapixels=req.megapixels,
             steps=req.steps,
         )
@@ -63,7 +67,9 @@ async def generate_order_coloring(
         )
 
 
-@router.post("/images/{image_id}/generate-coloring", response_model=ColoringVersionResponse)
+@router.post(
+    "/images/{image_id}/generate-coloring", response_model=ColoringVersionResponse, operation_id="generateImageColoring"
+)
 async def generate_image_coloring(
     image_id: int,
     service: ColoringServiceDep,
@@ -87,7 +93,7 @@ async def generate_image_coloring(
 
         # Get image to emit Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(image.line_item.order.shopify_id, image_id)
 
         return ColoringVersionResponse.from_model(coloring_version)
     except ImageNotFound:
@@ -99,7 +105,9 @@ async def generate_image_coloring(
         )
 
 
-@router.post("/coloring-versions/{version_id}/retry", response_model=ColoringVersionResponse)
+@router.post(
+    "/coloring-versions/{version_id}/retry", response_model=ColoringVersionResponse, operation_id="retryColoringVersion"
+)
 async def retry_coloring_version(
     version_id: int,
     service: ColoringServiceDep,

@@ -19,7 +19,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["orders"])
 
 
-@router.get("/orders", response_model=OrderListResponse)
+@router.get("/orders", response_model=OrderListResponse, operation_id="listOrders")
 async def list_orders(
     service: OrderServiceDep,
     skip: int = 0,
@@ -34,27 +34,27 @@ async def list_orders(
     )
 
 
-@router.get("/orders/{order_number}", response_model=OrderDetailResponse)
+@router.get("/orders/{shopify_id}", response_model=OrderDetailResponse, operation_id="getOrder")
 async def get_order(
-    order_number: str,
+    shopify_id: int,
     service: OrderServiceDep,
 ) -> OrderDetailResponse:
-    """Get a single order with line items and images by Shopify order number."""
+    """Get a single order with line items and images by Shopify order ID."""
     try:
-        order = await service.get_order(order_number)
+        order = await service.get_order(shopify_id)
         return OrderDetailResponse.from_model(order)
     except OrderNotFound:
         raise HTTPException(status_code=404, detail="Order not found")
 
 
-@router.post("/orders/{order_number}/sync", response_model=StatusResponse)
+@router.post("/orders/{shopify_id}/sync", response_model=StatusResponse, operation_id="syncOrder")
 async def sync_order(
-    order_number: str,
+    shopify_id: int,
     service: OrderServiceDep,
 ) -> StatusResponse:
     """Manually trigger a sync/re-processing of an order."""
     try:
-        order = await service.prepare_sync(order_number)
+        order = await service.prepare_sync(shopify_id)
 
         # Dispatch task after DB commit
         assert order.id is not None
@@ -68,7 +68,7 @@ async def sync_order(
         raise HTTPException(status_code=404, detail="Order not found")
 
 
-@router.post("/orders/fetch-from-shopify", response_model=StatusResponse)
+@router.post("/orders/fetch-from-shopify", response_model=StatusResponse, operation_id="fetchFromShopify")
 async def fetch_from_shopify_endpoint(
     limit: int = 20,
 ) -> StatusResponse:

@@ -36,11 +36,6 @@ class Order(SQLModel, table=True):
     # Relationships
     line_items: list[LineItem] = Relationship(back_populates="order")
 
-    @property
-    def clean_order_number(self) -> str:
-        """Return order number without '#' prefix (for URLs, Mercure topics, etc.)."""
-        return self.shopify_order_number.lstrip("#")
-
 
 class LineItem(SQLModel, table=True):
     """Line item within an order (represents one coloring book)."""
@@ -103,11 +98,3 @@ class Image(SQLModel, table=True):
             "uselist": False,
         },
     )
-
-    @property
-    def clean_order_number(self) -> str:
-        """Return clean order number without '#' prefix.
-
-        Requires line_item and order relationships to be loaded.
-        """
-        return self.line_item.order.clean_order_number

@@ -26,9 +26,9 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["images"])
 
 
-@router.get("/orders/{order_number}/images/{image_id}", response_model=ImageResponse)
+@router.get("/orders/{shopify_id}/images/{image_id}", response_model=ImageResponse, operation_id="getOrderImage")
 async def get_order_image(
-    order_number: str,
+    shopify_id: int,
     image_id: int,
     service: ImageServiceDep,
 ) -> ImageResponse:
@@ -38,7 +38,7 @@ async def get_order_image(
     the frontend to fetch only the updated image data instead of the full order.
     """
     try:
-        image = await service.get_order_image(order_number=order_number, image_id=image_id)
+        image = await service.get_order_image(shopify_id=shopify_id, image_id=image_id)
         return ImageResponse.from_model(image)
     except OrderNotFound:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -46,7 +46,11 @@ async def get_order_image(
         raise HTTPException(status_code=404, detail="Image not found")
 
 
-@router.get("/images/{image_id}/coloring-versions", response_model=list[ColoringVersionResponse])
+@router.get(
+    "/images/{image_id}/coloring-versions",
+    response_model=list[ColoringVersionResponse],
+    operation_id="listColoringVersions",
+)
 async def list_coloring_versions(
     image_id: int,
     service: ImageServiceDep,
@@ -56,7 +60,7 @@ async def list_coloring_versions(
     return [ColoringVersionResponse.from_model(v) for v in versions]
 
 
-@router.get("/images/{image_id}/svg-versions", response_model=list[SvgVersionResponse])
+@router.get("/images/{image_id}/svg-versions", response_model=list[SvgVersionResponse], operation_id="listSvgVersions")
 async def list_svg_versions(
     image_id: int,
     service: ImageServiceDep,
@@ -66,7 +70,11 @@ async def list_svg_versions(
     return [SvgVersionResponse.from_model(v) for v in versions]
 
 
-@router.put("/images/{image_id}/select-coloring/{version_id}", response_model=StatusResponse)
+@router.put(
+    "/images/{image_id}/select-coloring/{version_id}",
+    response_model=StatusResponse,
+    operation_id="selectColoringVersion",
+)
 async def select_coloring_version(
     image_id: int,
     version_id: int,
@@ -78,12 +86,13 @@ async def select_coloring_version(
         image = await service.select_coloring_version(image_id, version_id)
 
         # Emit Mercure event for selection change
+        shopify_id = image.line_item.order.shopify_id
         logger.info(
             "Emitting selection change event",
             image_id=image_id,
-            order_number=image.clean_order_number,
+            shopify_id=shopify_id,
         )
-        await mercure.publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(shopify_id, image_id)
 
         return StatusResponse(status="ok", message=f"Selected coloring version {version_id}")
     except ImageNotFound:
@@ -94,7 +103,9 @@ async def select_coloring_version(
         raise HTTPException(status_code=400, detail="Coloring version does not belong to this image")
 
 
-@router.put("/images/{image_id}/select-svg/{version_id}", response_model=StatusResponse)
+@router.put(
+    "/images/{image_id}/select-svg/{version_id}", response_model=StatusResponse, operation_id="selectSvgVersion"
+)
 async def select_svg_version(
     image_id: int,
     version_id: int,
@@ -106,12 +117,13 @@ async def select_svg_version(
         image = await service.select_svg_version(image_id, version_id)
 
         # Emit Mercure event for selection change
+        shopify_id = image.line_item.order.shopify_id
         logger.info(
             "Emitting selection change event",
             image_id=image_id,
-            order_number=image.clean_order_number,
+            shopify_id=shopify_id,
         )
-        await mercure.publish_image_update(image.clean_order_number, image_id)
+        await mercure.publish_image_update(shopify_id, image_id)
 
         return StatusResponse(status="ok", message=f"Selected SVG version {version_id}")
     except ImageNotFound:

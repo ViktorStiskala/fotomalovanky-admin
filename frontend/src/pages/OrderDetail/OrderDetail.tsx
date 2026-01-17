@@ -12,6 +12,7 @@ import {
   generateOrderColoring,
   generateOrderSvg,
 } from "@/lib/api";
+import { getGetOrderQueryKey, getListOrdersQueryKey } from "@/api/generated/orders/orders";
 import { isColoringProcessing, hasCompletedColoring } from "@/lib/statusHelpers";
 import { useOrderEvents } from "@/hooks/useOrderEvents";
 import { queryClient } from "@/lib/queryClient";
@@ -20,46 +21,47 @@ import { Button } from "@/components/ui/button";
 import { ImageCard } from "./ImageCard";
 
 export default function OrderDetail() {
-  const { orderNumber } = useParams<{ orderNumber: string }>();
+  const { shopifyId } = useParams<{ shopifyId: string }>();
+  const shopifyIdNum = shopifyId ? parseInt(shopifyId, 10) : 0;
   const [dismissedSuccess, setDismissedSuccess] = useState(false);
   const [dismissedError, setDismissedError] = useState(false);
 
   // Subscribe to real-time updates for this specific order
-  useOrderEvents(orderNumber || "");
+  useOrderEvents(shopifyIdNum);
 
   const {
     data: order,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["order", orderNumber],
-    queryFn: () => fetchOrder(orderNumber!),
-    enabled: !!orderNumber,
+    queryKey: getGetOrderQueryKey(shopifyIdNum),
+    queryFn: () => fetchOrder(shopifyIdNum),
+    enabled: shopifyIdNum > 0,
   });
 
   const syncMutation = useMutation({
-    mutationFn: () => syncOrder(orderNumber!),
+    mutationFn: () => syncOrder(shopifyIdNum),
     onMutate: () => {
       setDismissedSuccess(false);
       setDismissedError(false);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
     },
   });
 
   const generateAllColoringMutation = useMutation({
-    mutationFn: () => generateOrderColoring(orderNumber!),
+    mutationFn: () => generateOrderColoring(shopifyIdNum),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
     },
   });
 
   const generateAllSvgMutation = useMutation({
-    mutationFn: () => generateOrderSvg(orderNumber!),
+    mutationFn: () => generateOrderSvg(shopifyIdNum),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["order", orderNumber] });
+      queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(shopifyIdNum) });
     },
   });
 
@@ -361,7 +363,7 @@ export default function OrderDetail() {
                   </div>
                 ) : (
                   lineItem.images.map((image) => (
-                    <ImageCard key={image.id} image={image} orderNumber={orderNumber || ""} />
+                    <ImageCard key={image.id} image={image} shopifyId={shopifyIdNum} />
                   ))
                 )}
               </div>

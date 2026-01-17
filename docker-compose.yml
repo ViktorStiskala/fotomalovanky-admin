@@ -100,6 +100,12 @@ services:
       mercure:
         condition: service_healthy
     command: ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   dramatiq:
     build:
@@ -144,12 +150,16 @@ services:
       - "5173:5173"
     env_file: .env
     environment:
-      VITE_API_URL: http://localhost:8000/api/v1
+      # Base URL only - Orval-generated paths already include /api/v1
+      VITE_API_URL: http://localhost:8000
       VITE_MERCURE_URL: ${MERCURE_URL:-http://localhost:3000/.well-known/mercure}
       VITE_SHOPIFY_STORE_HANDLE: ${SHOPIFY_STORE_HANDLE:-}
+      # For orval to fetch schema from backend container
+      ORVAL_API_URL: http://backend:8000/openapi.json
     depends_on:
-      - backend
-    command: ["npm", "run", "dev", "--", "--host"]
+      backend:
+        condition: service_healthy
+    command: ["sh", "-c", "npm run generate:api && npm run dev -- --host"]
 
 volumes:
   postgres_data:

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { fetchOrders, fetchFromShopify, extractOrderNumber, getShopifyOrderUrl } from "@/lib/api";
+import { fetchOrders, fetchFromShopify, getShopifyOrderUrl } from "@/lib/api";
+import { getListOrdersQueryKey } from "@/api/generated/orders/orders";
 import { useOrderListEvents } from "@/hooks/useOrderListEvents";
 import { ORDER_STATUS_DISPLAY, getPaymentStatusDisplay } from "@/types";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ export default function OrderList() {
   useOrderListEvents();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["orders"],
+    queryKey: getListOrdersQueryKey(),
     queryFn: () => fetchOrders(),
   });
 
@@ -28,7 +29,7 @@ export default function OrderList() {
     },
     onSuccess: () => {
       // Invalidate and refetch orders list
-      queryClient.invalidateQueries({ queryKey: ["orders"] });
+      queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
       console.log("Shopify fetch task queued");
     },
   });
@@ -123,7 +124,7 @@ export default function OrderList() {
                 <tr key={order.id} className="border-t hover:bg-muted/50">
                   <td className="p-3">
                     <Link
-                      to={`/orders/${extractOrderNumber(order.shopify_order_number)}`}
+                      to={`/orders/${order.shopify_id}`}
                       className="text-primary underline hover:no-underline"
                     >
                       {order.shopify_order_number}

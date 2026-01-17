@@ -46,13 +46,13 @@ async def _ingest_order_async(order_id: int) -> None:
             return
 
         assert order.id is not None, "Order ID cannot be None after database fetch"
-        order_number = order.clean_order_number if order.shopify_order_number else str(order.id)
+        shopify_id = order.shopify_id
 
         try:
             # Set status to PROCESSING
             order.status = OrderStatus.PROCESSING
             await session.commit()
-            await mercure.publish_order_update(order_number)
+            await mercure.publish_order_update(shopify_id)
 
             # Use ShopifySyncService for the actual sync logic
             service = ShopifySyncService(session)
@@ -62,7 +62,7 @@ async def _ingest_order_async(order_id: int) -> None:
                 logger.error("Order ingestion failed", order_id=order_id, error=result.error)
                 order.status = OrderStatus.ERROR
                 await session.commit()
-                await mercure.publish_order_update(order_number)
+                await mercure.publish_order_update(shopify_id)
                 return
 
             # Dispatch image download task or mark complete
@@ -72,7 +72,7 @@ async def _ingest_order_async(order_id: int) -> None:
             else:
                 order.status = OrderStatus.READY_FOR_REVIEW
                 await session.commit()
-                await mercure.publish_order_update(order_number)
+                await mercure.publish_order_update(shopify_id)
 
             logger.info("Order ingestion complete", order_id=order_id)
 
@@ -80,5 +80,5 @@ async def _ingest_order_async(order_id: int) -> None:
             logger.error("Order ingestion failed", order_id=order_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await mercure.publish_order_update(order_number)
+            await mercure.publish_order_update(shopify_id)
             raise

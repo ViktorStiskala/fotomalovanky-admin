@@ -1,12 +1,8 @@
 // Environment-based configuration
-// VITE_API_URL should contain the full base URL including /api/v1
-// e.g., http://localhost:8000/api/v1 or http://backend:8000/api/v1
-export const API_URL = import.meta.env.VITE_API_URL || "/api/v1";
-
-// Legacy alias for backward compatibility (deprecated)
-export const API_BASE = import.meta.env.VITE_API_URL
-  ? import.meta.env.VITE_API_URL.replace(/\/api\/v1$/, "")
-  : "";
+// VITE_API_URL is the base URL for API requests (without /api/v1 suffix)
+// The Orval-generated code already includes /api/v1 in paths
+// e.g., "" for local dev with proxy, "http://backend:8000" for Docker
+export const API_URL = import.meta.env.VITE_API_URL || "";
 
 export const MERCURE_URL =
   import.meta.env.VITE_MERCURE_URL || "http://localhost:3000/.well-known/mercure";

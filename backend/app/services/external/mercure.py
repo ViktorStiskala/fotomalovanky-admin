@@ -1,6 +1,5 @@
 """Mercure SSE publishing service."""
 
-import json
 from typing import Literal
 
 import httpx
@@ -8,6 +7,12 @@ import jwt
 import structlog
 
 from app.config import settings
+from app.models.events import (
+    ImageStatusEvent,
+    ImageUpdateEvent,
+    ListUpdateEvent,
+    OrderUpdateEvent,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -38,7 +43,7 @@ class MercureService:
         Args:
             topics: Topic(s) to publish to (string or list of strings)
             data: JSON data to publish
-            context: Optional context for logging (e.g., order_number)
+            context: Optional context for logging (e.g., shopify_id)
 
         Returns:
             True if published successfully, False otherwise
@@ -82,7 +87,7 @@ class MercureService:
                 )
                 return False
 
-    async def publish_order_update(self, order_number: str) -> bool:
+    async def publish_order_update(self, shopify_id: int) -> bool:
         """Publish an order update event to Mercure.
 
         This sends a lightweight "ping" to notify connected clients
@@ -90,17 +95,17 @@ class MercureService:
         the order data from the API.
 
         Args:
-            order_number: The Shopify order number (with or without "#" prefix)
+            shopify_id: The Shopify order ID (numeric)
 
         Returns:
             True if published successfully, False otherwise
         """
-        clean_order_number = order_number.lstrip("#")
+        event = OrderUpdateEvent(type="order_update", shopify_id=shopify_id)
 
         return await self._publish(
-            topics=["orders", f"orders/{clean_order_number}"],
-            data=f'{{"type": "order_update", "order_number": "{clean_order_number}"}}',
-            context={"order_number": clean_order_number},
+            topics=["orders", f"orders/{shopify_id}"],
+            data=event.model_dump_json(),
+            context={"shopify_id": shopify_id},
         )
 
     async def publish_order_list_update(self) -> bool:
@@ -108,14 +113,15 @@ class MercureService:
 
         Used when a new order is created or an order is deleted.
         """
+        event = ListUpdateEvent(type="list_update")
         return await self._publish(
             topics="orders",
-            data='{"type": "list_update"}',
+            data=event.model_dump_json(),
         )
 
     async def publish_image_update(
         self,
-        order_number: str,
+        shopify_id: int,
         image_id: int,
     ) -> bool:
         """Publish a general update event for a specific image.
@@ -124,34 +130,30 @@ class MercureService:
         clients to refetch the image data.
 
         Args:
-            order_number: The Shopify order number (with or without "#" prefix)
+            shopify_id: The Shopify order ID (numeric)
             image_id: Database ID of the Image record
 
         Returns:
             True if published successfully, False otherwise
         """
-        clean_order_number = order_number.lstrip("#")
-
-        data = json.dumps(
-            {
-                "type": "image_update",
-                "order_number": clean_order_number,
-                "image_id": image_id,
-            }
+        event = ImageUpdateEvent(
+            type="image_update",
+            shopify_id=shopify_id,
+            image_id=image_id,
         )
 
         return await self._publish(
-            topics=["orders", f"orders/{clean_order_number}"],
-            data=data,
+            topics=["orders", f"orders/{shopify_id}"],
+            data=event.model_dump_json(),
             context={
-                "order_number": clean_order_number,
+                "shopify_id": shopify_id,
                 "image_id": image_id,
             },
         )
 
     async def publish_image_status(
         self,
-        order_number: str,
+        shopify_id: int,
         image_id: int,
         status_type: Literal["coloring", "svg"],
         version_id: int,
@@ -164,7 +166,7 @@ class MercureService:
         the updated image data.
 
         Args:
-            order_number: The Shopify order number (with or without "#" prefix)
+            shopify_id: The Shopify order ID (numeric)
             image_id: Database ID of the Image record
             status_type: Either "coloring" or "svg"
             version_id: Database ID of ColoringVersion or SvgVersion
@@ -173,24 +175,20 @@ class MercureService:
         Returns:
             True if published successfully, False otherwise
         """
-        clean_order_number = order_number.lstrip("#")
-
-        data = json.dumps(
-            {
-                "type": "image_status",
-                "order_number": clean_order_number,
-                "image_id": image_id,
-                "status_type": status_type,
-                "version_id": version_id,
-                "status": status,
-            }
+        event = ImageStatusEvent(
+            type="image_status",
+            shopify_id=shopify_id,
+            image_id=image_id,
+            status_type=status_type,
+            version_id=version_id,
+            status=status,
         )
 
         return await self._publish(
-            topics=["orders", f"orders/{clean_order_number}"],
-            data=data,
+            topics=["orders", f"orders/{shopify_id}"],
+            data=event.model_dump_json(),
             context={
-                "order_number": clean_order_number,
+                "shopify_id": shopify_id,
                 "image_id": image_id,
                 "status_type": status_type,
                 "version_id": version_id,
