@@ -1,9 +1,29 @@
 """Application configuration using pydantic-settings."""
 
 import json
+import os
+import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+@dataclass
+class ProxyConfig:
+    """Configuration for a single proxy."""
+
+    host: str
+    port: int
+    username: str
+    password: str
+    certificate_path: str | None = None
+
+    @property
+    def url(self) -> str:
+        """Build proxy URL with authentication."""
+        return f"http://{self.username}:{self.password}@{self.host}:{self.port}"
 
 
 class Settings(BaseSettings):
@@ -81,6 +101,54 @@ class Settings(BaseSettings):
             result: list[str] = json.loads(v)
             return result
         return [origin.strip() for origin in v.split(",") if origin.strip()]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def proxies(self) -> list[ProxyConfig]:
+        """Dynamically discover and build list of configured proxies from environment.
+
+        Scans for PROXY_N_HOST, PROXY_N_PORT, PROXY_N_USERNAME, PROXY_N_PASSWORD
+        where N is any number. PROXY_N_CERTIFICATE is optional.
+
+        Example environment variables:
+            PROXY_1_HOST=brd.superproxy.io
+            PROXY_1_PORT=22225
+            PROXY_1_USERNAME=brd-customer-xxx
+            PROXY_1_PASSWORD=secret
+            PROXY_1_CERTIFICATE=brightdata.crt  # Optional, in backend/certs/
+        """
+        proxy_pattern = re.compile(r"^PROXY_(\d+)_HOST$", re.IGNORECASE)
+        indices: set[int] = set()
+
+        for key in os.environ:
+            match = proxy_pattern.match(key)
+            if match:
+                indices.add(int(match.group(1)))
+
+        certs_dir = Path(__file__).parent / "certs"
+        result: list[ProxyConfig] = []
+
+        for i in sorted(indices):
+            prefix = f"PROXY_{i}_"
+            host = os.environ.get(f"{prefix}HOST")
+            port_str = os.environ.get(f"{prefix}PORT")
+            username = os.environ.get(f"{prefix}USERNAME")
+            password = os.environ.get(f"{prefix}PASSWORD")
+            cert_filename = os.environ.get(f"{prefix}CERTIFICATE")
+
+            if host and port_str and username and password:
+                cert_path = str(certs_dir / cert_filename) if cert_filename else None
+                result.append(
+                    ProxyConfig(
+                        host=host,
+                        port=int(port_str),
+                        username=username,
+                        password=password,
+                        certificate_path=cert_path,
+                    )
+                )
+
+        return result
 
 
 settings = Settings()  # type: ignore[call-arg]  # pydantic-settings loads from env

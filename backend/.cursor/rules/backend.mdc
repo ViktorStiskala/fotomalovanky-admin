@@ -19,11 +19,14 @@ alwaysApply: true
 ```
 app/services/
 ├── exceptions.py              # Base service exceptions (ServiceError, NotFoundError, ValidationError)
+├── download/                  # Generic download service with proxy support
+│   ├── config.py              # RetryConfig, constants (USER_AGENTS, etc.)
+│   └── download_service.py    # DownloadService class
 ├── orders/                    # Domain: order management
 │   ├── exceptions.py          # OrderNotFound, ImageNotFound, etc.
 │   ├── order_service.py
 │   ├── image_service.py
-│   ├── image_download_service.py  # Image download/upload with S3
+│   ├── shopify_image_download_service.py  # Shopify image download (uses DownloadService)
 │   └── shopify_sync_service.py    # Shopify order sync logic
 ├── coloring/                  # Domain: image processing
 │   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
@@ -146,6 +149,36 @@ paths.original_image(line_item, image, "jpg")      # orders/{ulid}/items/{pos}/o
 paths.coloring_version(line_item, image, version)  # orders/{ulid}/items/{pos}/coloring/v{n}/image_{pos}.png
 paths.svg_version(line_item, image, version)       # orders/{ulid}/items/{pos}/svg/v{n}/image_{pos}.svg
 ```
+
+## External File Downloads (MANDATORY)
+
+Use `DownloadService` for downloading files from external URLs:
+
+```python
+from app.services.download.download_service import DownloadService
+
+# ALWAYS use as async context manager
+async with DownloadService() as download_service:
+    # Direct download (no proxy)
+    data = await download_service.download(url)
+
+    # With proxy fallback (recommended for external CDNs)
+    data = await download_service.download(url, proxy_fallback=True)
+
+    # With extra headers
+    data = await download_service.download(
+        url,
+        extra_headers={"Referer": "https://example.com/"},
+        proxy_fallback=True,
+    )
+```
+
+**Features:**
+
+- Configurable retries via `tenacity` (default: 3 attempts)
+- Dynamic proxy discovery from `PROXY_N_*` environment variables
+- Browser-like headers with deterministic User-Agent/Accept-Language per hostname
+- SSL certificate support for MITM proxies (BrightData, etc.)
 
 ## AutoIncrementOnConflict (Race-Safe Sequences)
 

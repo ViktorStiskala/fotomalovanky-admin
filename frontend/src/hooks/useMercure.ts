@@ -29,15 +29,13 @@ if (typeof window !== "undefined") {
 }
 
 /**
- * Determines if an SSE error should be reported to error tracking (e.g., Sentry).
+ * Determines if an SSE error should be logged/reported.
  *
- * Returns false for "expected" errors that occur during normal browser behavior:
+ * Returns false for expected errors during normal browser behavior:
  * - Page unload/navigation
  * - Tab switching (page hidden)
  * - Intentional connection close
  * - Network going offline temporarily
- *
- * These are NOT bugs and should not create noise in error tracking.
  */
 function isReportableSSEError(isClosing: boolean): boolean {
   // Never report if we're intentionally closing or page is unloading
@@ -100,47 +98,15 @@ export function useMercure(
 
       eventSource.onmessage = (event: MessageEvent) => {
         if (isClosing || isPageUnloading) return;
-        try {
-          const data: unknown = JSON.parse(event.data as string);
-          onMessageRef.current(data);
-        } catch (error) {
-          // JSON parse errors ARE bugs and should always be reported
-          console.error("[Mercure] Failed to parse event:", {
-            topic,
-            error,
-            rawData: event.data,
-          });
-
-          // Future Sentry integration example:
-          // Sentry.captureException(error, {
-          //   tags: { topic },
-          //   extra: { rawData: event.data },
-          // });
-        }
+        const data: unknown = JSON.parse(event.data as string);
+        onMessageRef.current(data);
       };
 
-      eventSource.onerror = (event: Event) => {
-        // Only log/report errors that indicate real problems
+      eventSource.onerror = () => {
+        // Silence expected errors (page unload, tab hidden, offline, intentional close)
+        // Only log unexpected connection errors
         if (isReportableSSEError(isClosing)) {
-          // Structured error info for future Sentry integration
-          const errorContext = {
-            topic,
-            readyState: eventSource?.readyState,
-            // EventSource readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
-            readyStateLabel: ["CONNECTING", "OPEN", "CLOSED"][eventSource?.readyState ?? 2],
-            isOnline: navigator.onLine,
-            visibilityState: document.visibilityState,
-          };
-
-          // Log with context - in future, this would go to Sentry
-          console.warn("[Mercure] Connection error (will auto-reconnect)", errorContext, event);
-
-          // Future Sentry integration example:
-          // Sentry.captureMessage("Mercure SSE connection error", {
-          //   level: "warning",
-          //   tags: { topic },
-          //   extra: errorContext,
-          // });
+          console.warn("[Mercure] Connection error (will auto-reconnect)", { topic });
         }
         // EventSource will automatically try to reconnect
       };

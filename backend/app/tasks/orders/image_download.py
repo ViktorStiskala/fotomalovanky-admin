@@ -9,8 +9,9 @@ from sqlmodel import select
 
 from app.models.enums import OrderStatus
 from app.models.order import LineItem, Order
+from app.services.download.download_service import DownloadService
 from app.services.external.mercure import MercureService
-from app.services.orders.image_download_service import ImageDownloadService
+from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
 from app.tasks.utils import task_db_session
@@ -18,19 +19,19 @@ from app.tasks.utils import task_db_session
 logger = structlog.get_logger(__name__)
 
 
-@task_recover(ImageDownloadService.get_incomplete_downloads)
+@task_recover(ShopifyImageDownloadService.get_incomplete_downloads)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
 def download_order_images(order_id: str) -> None:
     """Download all images for an order in parallel.
 
     This task:
     1. Sets order status to DOWNLOADING
-    2. Uses ImageDownloadService to download all images
+    2. Uses ShopifyImageDownloadService to download all images
     3. Sets order status to READY_FOR_REVIEW (or ERROR if any failed)
     4. Publishes Mercure updates at each stage
 
     The task has two layers of retry:
-    - Per-image retries via tenacity in ImageDownloadService (handles transient failures)
+    - Per-image retries via tenacity in DownloadService (handles transient failures)
     - Task-level retries via Dramatiq (handles catastrophic failures)
     """
     asyncio.run(_download_order_images_async(order_id))
@@ -65,9 +66,10 @@ async def _download_order_images_async(order_id: str) -> None:
             await session.commit()
             await mercure.publish_order_update(order_id)
 
-            # Use ImageDownloadService for downloads
-            download_service = ImageDownloadService(session, storage)
-            download_result = await download_service.download_order_images(order)
+            # Use DownloadService with async context manager
+            async with DownloadService() as download_svc:
+                image_service = ShopifyImageDownloadService(session, storage, download_svc)
+                download_result = await image_service.download_order_images(order)
 
             # Commit image updates from service
             await session.commit()
