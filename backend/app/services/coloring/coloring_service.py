@@ -196,10 +196,12 @@ class ColoringService:
         """Get IDs of coloring versions stuck in intermediate states.
 
         Used by task recovery to find tasks that were interrupted.
+        Excludes versions that already have file_ref (completed but status not updated).
         """
         result = await session.execute(
             select(ColoringVersion.id).where(
-                ColoringVersion.status.in_(ColoringProcessingStatus.intermediate_states())  # type: ignore[attr-defined]
+                ColoringVersion.status.in_(ColoringProcessingStatus.intermediate_states()),  # type: ignore[attr-defined]
+                ColoringVersion.file_ref == None,  # noqa: E711 - SQLAlchemy None check
             )
         )
         return [row[0] for row in result.fetchall()]

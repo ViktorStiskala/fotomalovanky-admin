@@ -14,7 +14,7 @@ from app.services.external.mercure import MercureService
 from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
-from app.tasks.utils import task_db_session
+from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)
 

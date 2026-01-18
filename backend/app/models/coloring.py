@@ -57,6 +57,9 @@ class ColoringVersion(SQLModel, table=True):
         sa_column=Column(S3ObjectRef, nullable=True),
     )
 
+    # RunPod job ID for resuming interrupted polling
+    runpod_job_id: str | None = Field(default=None, max_length=100)
+
     status: ColoringProcessingStatus = Field(
         default=ColoringProcessingStatus.PENDING,
         sa_column=Column(
@@ -98,6 +101,9 @@ class SvgVersion(SQLModel, table=True):
         default=None,
         sa_column=Column(S3ObjectRef, nullable=True),
     )
+
+    # Vectorizer.ai job ID for resuming interrupted polling
+    vectorizer_job_id: str | None = Field(default=None, max_length=100)
 
     status: SvgProcessingStatus = Field(
         default=SvgProcessingStatus.PENDING,

@@ -233,10 +233,12 @@ class VectorizerService:
         """Get IDs of SVG versions stuck in intermediate states.
 
         Used by task recovery to find tasks that were interrupted.
+        Excludes versions that already have file_ref (completed but status not updated).
         """
         result = await session.execute(
             select(SvgVersion.id).where(
-                SvgVersion.status.in_(SvgProcessingStatus.intermediate_states())  # type: ignore[attr-defined]
+                SvgVersion.status.in_(SvgProcessingStatus.intermediate_states()),  # type: ignore[attr-defined]
+                SvgVersion.file_ref == None,  # noqa: E711 - SQLAlchemy None check
             )
         )
         return [row[0] for row in result.fetchall()]

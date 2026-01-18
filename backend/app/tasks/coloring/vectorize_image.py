@@ -16,7 +16,7 @@ from app.services.external.vectorizer import (
 from app.services.storage.paths import OrderStoragePaths
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
-from app.tasks.utils import task_db_session
+from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)
 
@@ -45,6 +45,7 @@ async def _generate_svg_async(svg_version_id: int) -> None:
     """Async implementation of SVG vectorization."""
     from app.models.coloring import ColoringVersion, SvgVersion
     from app.models.order import Image, LineItem, Order
+    from app.tasks.utils.processing_lock import acquire_processing_lock
 
     mercure = MercureService()
     vectorizer = VectorizerApiService()
@@ -53,11 +54,18 @@ async def _generate_svg_async(svg_version_id: int) -> None:
     logger.info("Starting SVG vectorization", svg_version_id=svg_version_id)
 
     async with task_db_session() as session:
-        # Load SVG version
-        svg_version = await session.get(SvgVersion, svg_version_id)
-        if not svg_version:
-            logger.error("SvgVersion not found", svg_version_id=svg_version_id)
+        # Acquire exclusive lock with race condition protection
+        lock_result = await acquire_processing_lock(
+            session,
+            SvgVersion,
+            svg_version_id,
+            completed_status=SvgProcessingStatus.COMPLETED,
+        )
+        if not lock_result.should_process:
             return
+
+        svg_version = lock_result.record
+        assert svg_version is not None  # Type narrowing
 
         # Set PROCESSING immediately (task has started)
         svg_version.status = SvgProcessingStatus.PROCESSING

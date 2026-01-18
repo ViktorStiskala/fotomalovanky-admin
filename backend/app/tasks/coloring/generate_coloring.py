@@ -12,7 +12,7 @@ from app.services.external.runpod import RunPodError, RunPodService
 from app.services.storage.paths import OrderStoragePaths
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
-from app.tasks.utils import task_db_session
+from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)
 
@@ -41,6 +41,7 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
     """Async implementation of coloring generation."""
     from app.models.coloring import ColoringVersion
     from app.models.order import Image, LineItem, Order
+    from app.tasks.utils.processing_lock import acquire_processing_lock
 
     mercure = MercureService()
     runpod = RunPodService()
@@ -49,11 +50,18 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
     logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
 
     async with task_db_session() as session:
-        # Load coloring version
-        coloring_version = await session.get(ColoringVersion, coloring_version_id)
-        if not coloring_version:
-            logger.error("ColoringVersion not found", coloring_version_id=coloring_version_id)
+        # Acquire exclusive lock with race condition protection
+        lock_result = await acquire_processing_lock(
+            session,
+            ColoringVersion,
+            coloring_version_id,
+            completed_status=ColoringProcessingStatus.COMPLETED,
+        )
+        if not lock_result.should_process:
             return
+
+        coloring_version = lock_result.record
+        assert coloring_version is not None  # Type narrowing
 
         # Set PROCESSING immediately (task has started)
         coloring_version.status = ColoringProcessingStatus.PROCESSING
@@ -114,25 +122,46 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
             if not image.file_ref:
                 raise FileNotFoundError("Image not uploaded to S3 yet")
 
-            # Read input image from S3
-            image_data = await storage.download(image.file_ref)
-
             # Generate storage key for output using OrderStoragePaths
             paths = OrderStoragePaths(order)
             output_key = paths.coloring_version(line_item, image, coloring_version)
 
-            # Update status: RUNPOD_SUBMITTING
-            await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTING)
+            # SAFEGUARD: Check if we have an existing RunPod job_id to resume
+            job_id = coloring_version.runpod_job_id
 
-            # Submit to RunPod
-            job_id = await runpod.submit_job(
-                image_data=image_data,
-                megapixels=coloring_version.megapixels,
-                steps=coloring_version.steps,
-            )
+            if job_id:
+                # Resume polling existing job (task was interrupted mid-polling)
+                logger.info(
+                    "Resuming polling for existing RunPod job",
+                    coloring_version_id=coloring_version_id,
+                    job_id=job_id,
+                )
+            else:
+                # Read input image from S3
+                image_data = await storage.download(image.file_ref)
 
-            # Update status: RUNPOD_SUBMITTED
-            await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTED)
+                # Update status: RUNPOD_SUBMITTING
+                await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTING)
+
+                # Submit to RunPod
+                job_id = await runpod.submit_job(
+                    image_data=image_data,
+                    megapixels=coloring_version.megapixels,
+                    steps=coloring_version.steps,
+                )
+
+                # Store job_id immediately after submission to enable resume
+                coloring_version.runpod_job_id = job_id
+                coloring_version.status = ColoringProcessingStatus.RUNPOD_SUBMITTED
+                await session.commit()
+
+                await mercure.publish_image_status(
+                    order_id=order_id,
+                    image_id=image_id,
+                    status_type="coloring",
+                    version_id=coloring_version_id,
+                    status=ColoringProcessingStatus.RUNPOD_SUBMITTED,
+                )
 
             # Define callback for RunPod status changes
             async def on_runpod_status_change(runpod_status: str) -> None:
@@ -152,8 +181,9 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
                 content_type="image/png",
             )
 
-            # Update version record
+            # Update version record - clear job_id since we're done
             coloring_version.file_ref = file_ref
+            coloring_version.runpod_job_id = None  # Clear to prevent reuse
             coloring_version.status = ColoringProcessingStatus.COMPLETED
 
             # Set as selected version for the image

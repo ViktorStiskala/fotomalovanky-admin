@@ -1,7 +1,6 @@
 """Enum definitions for database models."""
 
 from enum import StrEnum
-from typing import Self
 
 
 class OrderStatus(StrEnum):
@@ -28,7 +27,7 @@ class ColoringProcessingStatus(StrEnum):
     ERROR = "error"
 
     @classmethod
-    def intermediate_states(cls) -> frozenset[Self]:
+    def intermediate_states(cls) -> frozenset["ColoringProcessingStatus"]:
         """States that indicate task was interrupted mid-processing.
 
         Includes QUEUED because if dramatiq never picks up the task
@@ -44,6 +43,14 @@ class ColoringProcessingStatus(StrEnum):
                 cls.RUNPOD_PROCESSING,
             }
         )
+
+    @classmethod
+    def startable_states(cls) -> frozenset["ColoringProcessingStatus"]:
+        """States from which a new processing task can be started.
+
+        Used by acquire_processing_lock to determine if a task should proceed.
+        """
+        return frozenset({cls.PENDING, cls.QUEUED, cls.ERROR})
 
 
 class VersionType(StrEnum):
@@ -64,7 +71,7 @@ class SvgProcessingStatus(StrEnum):
     ERROR = "error"
 
     @classmethod
-    def intermediate_states(cls) -> frozenset[Self]:
+    def intermediate_states(cls) -> frozenset["SvgProcessingStatus"]:
         """States that indicate task was interrupted mid-processing.
 
         Includes QUEUED because if dramatiq never picks up the task
@@ -77,3 +84,11 @@ class SvgProcessingStatus(StrEnum):
                 cls.VECTORIZER_PROCESSING,
             }
         )
+
+    @classmethod
+    def startable_states(cls) -> frozenset["SvgProcessingStatus"]:
+        """States from which a new processing task can be started.
+
+        Used by acquire_processing_lock to determine if a task should proceed.
+        """
+        return frozenset({cls.PENDING, cls.QUEUED, cls.ERROR})

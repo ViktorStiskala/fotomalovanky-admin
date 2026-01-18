@@ -8,7 +8,7 @@ import structlog
 from app.services.external.mercure import MercureService
 from app.services.orders.shopify_sync_service import ShopifySyncService
 from app.tasks.orders.order_ingestion import ingest_order
-from app.tasks.utils import task_db_session
+from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)
 

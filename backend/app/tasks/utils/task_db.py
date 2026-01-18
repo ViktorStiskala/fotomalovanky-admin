@@ -1,4 +1,4 @@
-"""Shared utilities for Dramatiq background tasks."""
+"""Database session utilities for Dramatiq background tasks."""
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
