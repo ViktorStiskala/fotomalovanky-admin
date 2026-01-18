@@ -148,11 +148,26 @@ class DownloadService:
         return result
 
     def _get_ssl_context(self, proxy: ProxyConfig) -> ssl.SSLContext | bool:
-        """Get SSL context for proxy with certificate, or True for default."""
+        """Get SSL context for proxy with certificate verification.
+
+        For MITM proxies (like BrightData), we use VERIFY_ALLOW_PROXY_CERTS flag
+        which relaxes OpenSSL 3.5+ strict validation of proxy-generated certificates
+        (specifically the missing Authority Key Identifier extension).
+
+        If certificate_path is set, creates an SSL context with:
+        - The proxy's CA certificate loaded
+        - VERIFY_ALLOW_PROXY_CERTS flag for proxy certificate compatibility
+        - Full certificate verification and hostname checking
+
+        Otherwise, returns True to use default system verification.
+        """
         if proxy.certificate_path:
-            ssl_context = ssl.create_default_context()
-            ssl_context.load_verify_locations(proxy.certificate_path)
-            return ssl_context
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.load_verify_locations(proxy.certificate_path)
+            ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.check_hostname = True
+            ctx.verify_flags = ssl.VERIFY_ALLOW_PROXY_CERTS
+            return ctx
         return True
 
     async def _download_direct(

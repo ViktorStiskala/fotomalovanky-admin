@@ -125,7 +125,8 @@ class Settings(BaseSettings):
             if match:
                 indices.add(int(match.group(1)))
 
-        certs_dir = Path(__file__).parent / "certs"
+        # certs/ is at backend/certs/, not backend/app/certs/
+        certs_dir = Path(__file__).parent.parent / "certs"
         result: list[ProxyConfig] = []
 
         for i in sorted(indices):
