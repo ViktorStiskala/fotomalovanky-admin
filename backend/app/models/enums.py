@@ -2,6 +2,10 @@
 
 from enum import StrEnum
 
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
+
+from app.models.status import Flags, ProcessingStatusEnum, Status
+
 
 class OrderStatus(StrEnum):
     """Status of an order in the processing pipeline."""
@@ -13,44 +17,51 @@ class OrderStatus(StrEnum):
     ERROR = "error"
 
 
-class ColoringProcessingStatus(StrEnum):
-    """Status for coloring generation (RunPod)."""
+class ColoringProcessingStatus(ProcessingStatusEnum):
+    """Status for coloring generation (RunPod).
 
-    PENDING = "pending"  # Not yet queued
-    QUEUED = "queued"  # In Dramatiq queue
-    PROCESSING = "processing"  # Dramatiq task started
-    RUNPOD_SUBMITTING = "runpod_submitting"  # Submitting to RunPod
-    RUNPOD_SUBMITTED = "runpod_submitted"  # RunPod accepted job
-    RUNPOD_QUEUED = "runpod_queued"  # RunPod: IN_QUEUE
-    RUNPOD_PROCESSING = "runpod_processing"  # RunPod: IN_PROGRESS
-    COMPLETED = "completed"
-    ERROR = "error"
+    Status flow (roughly ordered):
+        PENDING -> PROCESSING -> RUNPOD_SUBMITTING -> RUNPOD_SUBMITTED
+        -> RUNPOD_QUEUED -> RUNPOD_PROCESSING -> RUNPOD_COMPLETED
+        -> STORAGE_UPLOAD -> COMPLETED
 
-    @classmethod
-    def intermediate_states(cls) -> frozenset["ColoringProcessingStatus"]:
-        """States that indicate task was interrupted mid-processing.
+    Error/cancelled states can occur from any RUNPOD_* or STORAGE_UPLOAD state.
+    """
 
-        Includes QUEUED because if dramatiq never picks up the task
-        (e.g., worker was down, Redis issue), it needs to be re-dispatched.
-        """
-        return frozenset(
-            {
-                cls.QUEUED,
-                cls.PROCESSING,
-                cls.RUNPOD_SUBMITTING,
-                cls.RUNPOD_SUBMITTED,
-                cls.RUNPOD_QUEUED,
-                cls.RUNPOD_PROCESSING,
-            }
-        )
+    PENDING = Status("pending", Flags.STARTABLE, display="Čeká na odeslání")
+    QUEUED = Status("queued", Flags.STARTABLE | Flags.RECOVERABLE, display="Čeká ve frontě")
+    PROCESSING = Status("processing", Flags.RECOVERABLE, display="Zpracovává se")
+    RUNPOD_SUBMITTING = Status("runpod_submitting", Flags.RECOVERABLE, display="Runpod: odesílání")
+    RUNPOD_SUBMITTED = Status("runpod_submitted", Flags.RECOVERABLE | Flags.AWAITING_EXTERNAL, display="Runpod: přijato")
+    RUNPOD_QUEUED = Status("runpod_queued", Flags.RECOVERABLE | Flags.AWAITING_EXTERNAL, display="Runpod: ve frontě")
+    RUNPOD_PROCESSING = Status(
+        "runpod_processing", Flags.RECOVERABLE | Flags.AWAITING_EXTERNAL, display="Runpod: zpracování"
+    )
+    RUNPOD_COMPLETED = Status("runpod_completed", Flags.RECOVERABLE, display="Runpod: dokončeno")
+    STORAGE_UPLOAD = Status("storage_upload", Flags.RECOVERABLE, display="Nahrávání na S3")
+    COMPLETED = Status("completed", Flags.FINAL, display="Dokončeno")
+    ERROR = Status("error", Flags.FINAL | Flags.RETRYABLE, display="Chyba")
+    RUNPOD_CANCELLED = Status("runpod_cancelled", Flags.FINAL | Flags.RETRYABLE, display="Zrušeno")
 
-    @classmethod
-    def startable_states(cls) -> frozenset["ColoringProcessingStatus"]:
-        """States from which a new processing task can be started.
 
-        Used by acquire_processing_lock to determine if a task should proceed.
-        """
-        return frozenset({cls.PENDING, cls.QUEUED, cls.ERROR})
+class SvgProcessingStatus(ProcessingStatusEnum):
+    """Status for SVG vectorization (Vectorizer.ai).
+
+    Status flow (roughly ordered):
+        PENDING -> PROCESSING -> VECTORIZER_PROCESSING -> VECTORIZER_COMPLETED
+        -> STORAGE_UPLOAD -> COMPLETED
+    """
+
+    PENDING = Status("pending", Flags.STARTABLE, display="Čeká na odeslání")
+    QUEUED = Status("queued", Flags.STARTABLE | Flags.RECOVERABLE, display="Čeká ve frontě")
+    PROCESSING = Status("processing", Flags.RECOVERABLE, display="Zpracovává se")
+    VECTORIZER_PROCESSING = Status(
+        "vectorizer_processing", Flags.RECOVERABLE | Flags.AWAITING_EXTERNAL, display="Vectorizer: zpracování"
+    )
+    VECTORIZER_COMPLETED = Status("vectorizer_completed", Flags.RECOVERABLE, display="Vectorizer: dokončeno")
+    STORAGE_UPLOAD = Status("storage_upload", Flags.RECOVERABLE, display="Nahrávání na S3")
+    COMPLETED = Status("completed", Flags.FINAL, display="Dokončeno")
+    ERROR = Status("error", Flags.FINAL | Flags.RETRYABLE, display="Chyba")
 
 
 class VersionType(StrEnum):
@@ -60,35 +71,27 @@ class VersionType(StrEnum):
     SVG = "svg"
 
 
-class SvgProcessingStatus(StrEnum):
-    """Status for SVG vectorization (Vectorizer.ai)."""
+class RunPodJobStatus(StrEnum):
+    """Status values returned by RunPod API."""
 
-    PENDING = "pending"
-    QUEUED = "queued"
-    PROCESSING = "processing"  # Dramatiq task started
-    VECTORIZER_PROCESSING = "vectorizer_processing"  # HTTP request in progress
-    COMPLETED = "completed"
-    ERROR = "error"
+    COMPLETED = "COMPLETED"
+    IN_QUEUE = "IN_QUEUE"
+    IN_PROGRESS = "IN_PROGRESS"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
-    @classmethod
-    def intermediate_states(cls) -> frozenset["SvgProcessingStatus"]:
-        """States that indicate task was interrupted mid-processing.
 
-        Includes QUEUED because if dramatiq never picks up the task
-        (e.g., worker was down, Redis issue), it needs to be re-dispatched.
-        """
-        return frozenset(
-            {
-                cls.QUEUED,
-                cls.PROCESSING,
-                cls.VECTORIZER_PROCESSING,
-            }
-        )
+# PostgreSQL enum types - define alongside the enums for co-location
+COLORING_STATUS_PG_ENUM = PgEnum(
+    ColoringProcessingStatus,
+    name="coloringprocessingstatus",
+    create_type=False,
+    values_callable=lambda e: [member.value for member in e],
+)
 
-    @classmethod
-    def startable_states(cls) -> frozenset["SvgProcessingStatus"]:
-        """States from which a new processing task can be started.
-
-        Used by acquire_processing_lock to determine if a task should proceed.
-        """
-        return frozenset({cls.PENDING, cls.QUEUED, cls.ERROR})
+SVG_STATUS_PG_ENUM = PgEnum(
+    SvgProcessingStatus,
+    name="svgprocessingstatus",
+    create_type=False,
+    values_callable=lambda e: [member.value for member in e],
+)

@@ -7,7 +7,7 @@ import structlog
 
 from app.models.enums import OrderStatus
 from app.models.order import Order
-from app.services.external.mercure import MercureService
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.shopify_sync_service import ShopifySyncService
 from app.tasks.decorators import task_recover
 from app.tasks.orders.image_download import download_order_images
@@ -35,7 +35,7 @@ def ingest_order(order_id: str) -> None:
 
 async def _ingest_order_async(order_id: str) -> None:
     """Async implementation of order ingestion."""
-    mercure = MercureService()
+    mercure = MercurePublishService()
 
     logger.info("Starting order ingestion", order_id=order_id)
 

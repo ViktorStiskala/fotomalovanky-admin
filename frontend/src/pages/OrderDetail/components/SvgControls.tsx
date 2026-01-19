@@ -25,18 +25,24 @@ export function SvgControls({
   const [shapeStacking, setShapeStacking] = useState("stacked");
   const [groupBy, setGroupBy] = useState("color");
 
+  // Only allow SVG generation if the selected coloring is completed
+  const selectedColoringCompleted = selectedColoring?.status === "completed";
+  const canGenerateSvg = hasCompletedColoring && selectedColoringCompleted;
+
   return (
     <div className="border rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">
-            {selectedColoring
+            {selectedColoringCompleted
               ? `Vygenerovat SVG (omalovánka v${selectedColoring.version})`
               : "Vygenerovat SVG"}
           </span>
-          {!hasCompletedColoring && (
+          {!canGenerateSvg && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
-              Nejprve vygenerujte omalovánku
+              {!hasCompletedColoring
+                ? "Nejprve vygenerujte omalovánku"
+                : "Čeká se na dokončení omalovánky"}
             </span>
           )}
         </div>
@@ -45,21 +51,21 @@ export function SvgControls({
             variant="outline"
             size="sm"
             onClick={() => setShowSettings(!showSettings)}
-            disabled={!hasCompletedColoring}
+            disabled={!canGenerateSvg}
           >
             Nastavení
           </Button>
           <Button
             size="sm"
             onClick={() => onGenerate({ shape_stacking: shapeStacking, group_by: groupBy })}
-            disabled={!hasCompletedColoring || isPending || isProcessing}
+            disabled={!canGenerateSvg || isPending || isProcessing}
           >
             {isPending || isProcessing ? "Generuji..." : "Generovat"}
           </Button>
         </div>
       </div>
 
-      {showSettings && hasCompletedColoring && (
+      {showSettings && canGenerateSvg && (
         <div className="grid grid-cols-2 gap-4 pt-2 border-t">
           <div>
             <label className="text-xs text-muted-foreground">Vrstvení tvarů</label>

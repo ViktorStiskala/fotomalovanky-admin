@@ -68,7 +68,7 @@ export function useImageMutations({
 
   // Retry coloring version mutation
   const retryColoringMutation = useMutation({
-    mutationFn: (versionId: number) => retryColoringVersion(versionId),
+    mutationFn: (versionId: number) => retryColoringVersion(imageId, versionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },
@@ -76,7 +76,7 @@ export function useImageMutations({
 
   // Retry SVG version mutation
   const retrySvgMutation = useMutation({
-    mutationFn: (versionId: number) => retrySvgVersion(versionId),
+    mutationFn: (versionId: number) => retrySvgVersion(imageId, versionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
     },

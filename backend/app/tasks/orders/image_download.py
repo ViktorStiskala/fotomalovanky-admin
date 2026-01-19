@@ -10,7 +10,7 @@ from sqlmodel import select
 from app.models.enums import OrderStatus
 from app.models.order import LineItem, Order
 from app.services.download.download_service import DownloadService
-from app.services.external.mercure import MercureService
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
@@ -39,7 +39,7 @@ def download_order_images(order_id: str) -> None:
 
 async def _download_order_images_async(order_id: str) -> None:
     """Async implementation of image downloading."""
-    mercure = MercureService()
+    mercure = MercurePublishService()
     storage = S3StorageService()
 
     logger.info("Starting image download task", order_id=order_id)

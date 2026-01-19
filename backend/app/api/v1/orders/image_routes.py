@@ -5,15 +5,14 @@ from fastapi import APIRouter, HTTPException
 
 from app.api.v1.orders.dependencies import ImageServiceDep, MercureServiceDep
 from app.api.v1.orders.schemas import (
-    ColoringVersionResponse,
     ImageResponse,
     StatusResponse,
-    SvgVersionResponse,
 )
 from app.models.enums import VersionType
 from app.services.coloring.exceptions import (
     ColoringVersionNotFound,
     SvgVersionNotFound,
+    VersionNotCompleted,
     VersionOwnershipError,
 )
 from app.services.orders.exceptions import (
@@ -45,25 +44,6 @@ async def get_order_image(
         raise HTTPException(status_code=404, detail="Order not found")
     except (ImageNotFound, ImageNotFoundInOrder):
         raise HTTPException(status_code=404, detail="Image not found")
-
-
-@router.get(
-    "/images/{image_id}/versions/{version_type}",
-    response_model=list[ColoringVersionResponse] | list[SvgVersionResponse],
-    operation_id="listVersions",
-)
-async def list_versions(
-    image_id: int,
-    version_type: VersionType,
-    service: ImageServiceDep,
-) -> list[ColoringVersionResponse] | list[SvgVersionResponse]:
-    """List all versions of a specific type for an image."""
-    if version_type == VersionType.COLORING:
-        coloring_versions = await service.list_coloring_versions(image_id)
-        return [ColoringVersionResponse.from_model(v) for v in coloring_versions]
-    else:  # VersionType.SVG
-        svg_versions = await service.list_svg_versions(image_id)
-        return [SvgVersionResponse.from_model(v) for v in svg_versions]
 
 
 @router.put(
@@ -103,4 +83,8 @@ async def select_version(
     except VersionOwnershipError:
         raise HTTPException(
             status_code=400, detail=f"{version_type.capitalize()} version does not belong to this image"
+        )
+    except VersionNotCompleted:
+        raise HTTPException(
+            status_code=400, detail=f"{version_type.capitalize()} version is not completed yet"
         )

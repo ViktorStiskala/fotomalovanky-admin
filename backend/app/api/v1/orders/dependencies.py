@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.services.coloring.coloring_service import ColoringService
 from app.services.coloring.vectorizer_service import VectorizerService
-from app.services.external.mercure import MercureService
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.image_service import OrderImageService
 from app.services.orders.order_service import OrderService
 from app.services.storage.storage_service import S3StorageService
@@ -47,9 +47,9 @@ def get_storage_service() -> S3StorageService:
     return S3StorageService()
 
 
-def get_mercure_service() -> MercureService:
-    """Get a MercureService instance."""
-    return MercureService()
+def get_mercure_service() -> MercurePublishService:
+    """Get a MercurePublishService instance."""
+    return MercurePublishService()
 
 
 # Type aliases for cleaner endpoint signatures
@@ -58,4 +58,4 @@ ImageServiceDep = Annotated[OrderImageService, Depends(get_image_service)]
 ColoringServiceDep = Annotated[ColoringService, Depends(get_coloring_service)]
 VectorizerServiceDep = Annotated[VectorizerService, Depends(get_vectorizer_service)]
 StorageServiceDep = Annotated[S3StorageService, Depends(get_storage_service)]
-MercureServiceDep = Annotated[MercureService, Depends(get_mercure_service)]
+MercureServiceDep = Annotated[MercurePublishService, Depends(get_mercure_service)]

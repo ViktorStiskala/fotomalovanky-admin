@@ -7,10 +7,12 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
 from app.models.coloring import ColoringVersion, SvgVersion
+from app.models.enums import ColoringProcessingStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
 from app.services.coloring.exceptions import (
     ColoringVersionNotFound,
     SvgVersionNotFound,
+    VersionNotCompleted,
     VersionOwnershipError,
 )
 from app.services.orders.exceptions import ImageNotFound, ImageNotFoundInOrder, OrderNotFound
@@ -62,7 +64,10 @@ class OrderImageService:
         return image
 
     async def select_coloring_version(self, image_id: int, version_id: int) -> Image:
-        """Select a coloring version as default for an image."""
+        """Select a coloring version as default for an image.
+
+        Only completed versions can be selected.
+        """
         image = await self.get_image(image_id)
 
         coloring = await self.session.get(ColoringVersion, version_id)
@@ -70,6 +75,8 @@ class OrderImageService:
             raise ColoringVersionNotFound()
         if coloring.image_id != image_id:
             raise VersionOwnershipError()
+        if coloring.status != ColoringProcessingStatus.COMPLETED:
+            raise VersionNotCompleted()
 
         image.selected_coloring_id = version_id
         await self.session.commit()
@@ -78,49 +85,27 @@ class OrderImageService:
         return image
 
     async def select_svg_version(self, image_id: int, version_id: int) -> Image:
-        """Select an SVG version as default for an image."""
+        """Select an SVG version as default for an image.
+
+        Only completed versions can be selected.
+        """
         image = await self.get_image(image_id)
 
         svg = await self.session.get(SvgVersion, version_id)
         if not svg:
             raise SvgVersionNotFound()
 
-        coloring = await self.session.get(ColoringVersion, svg.coloring_version_id)
-        if not coloring or coloring.image_id != image_id:
+        # SvgVersion now has direct image_id reference
+        if svg.image_id != image_id:
             raise VersionOwnershipError()
+        if svg.status != SvgProcessingStatus.COMPLETED:
+            raise VersionNotCompleted()
 
         image.selected_svg_id = version_id
         await self.session.commit()
 
         logger.info("Selected SVG version", image_id=image_id, version_id=version_id)
         return image
-
-    async def list_coloring_versions(self, image_id: int) -> list[ColoringVersion]:
-        """List all coloring versions for an image."""
-        statement = (
-            select(ColoringVersion).where(ColoringVersion.image_id == image_id).order_by(ColoringVersion.version.desc())  # type: ignore[attr-defined]
-        )
-        result = await self.session.execute(statement)
-        return list(result.scalars().all())
-
-    async def list_svg_versions(self, image_id: int) -> list[SvgVersion]:
-        """List all SVG versions for an image (across all colorings)."""
-        # First get all coloring version IDs for this image
-        coloring_ids_result = await self.session.execute(
-            select(ColoringVersion.id).where(ColoringVersion.image_id == image_id)
-        )
-        coloring_ids = [row[0] for row in coloring_ids_result.fetchall()]
-
-        if not coloring_ids:
-            return []
-
-        statement = (
-            select(SvgVersion)
-            .where(SvgVersion.coloring_version_id.in_(coloring_ids))  # type: ignore[attr-defined]
-            .order_by(SvgVersion.version.desc())  # type: ignore[attr-defined]
-        )
-        result = await self.session.execute(statement)
-        return list(result.scalars().all())
 
     async def _get_image_with_versions(self, image_id: int) -> Image | None:
         """Get image with coloring and SVG versions loaded."""
@@ -143,20 +128,11 @@ class OrderImageService:
         return max_version + 1
 
     async def get_next_svg_version(self, image_id: int) -> int:
-        """Get the next version number for an SVG version (across all colorings for this image)."""
-        # Get all coloring versions for this image
-        coloring_ids_result = await self.session.execute(
-            select(ColoringVersion.id).where(ColoringVersion.image_id == image_id)
-        )
-        coloring_ids = [row[0] for row in coloring_ids_result.fetchall()]
+        """Get the next version number for an SVG version.
 
-        if not coloring_ids:
-            return 1
-
+        Now a simple query since SvgVersion has image_id directly.
+        """
         result = await self.session.execute(
-            select(func.coalesce(func.max(SvgVersion.version), 0)).where(
-                SvgVersion.coloring_version_id.in_(coloring_ids)  # type: ignore[attr-defined]
-            )
+            select(func.coalesce(func.max(SvgVersion.version), 0)).where(SvgVersion.image_id == image_id)
         )
-        max_version = result.scalar() or 0
-        return max_version + 1
+        return (result.scalar() or 0) + 1

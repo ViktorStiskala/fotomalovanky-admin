@@ -9,7 +9,6 @@ import {
   generateImageColoring as _generateImageColoring,
   generateOrderSvg as _generateOrderSvg,
   generateImageSvg as _generateImageSvg,
-  listVersions as _listVersions,
   selectVersion as _selectVersion,
   retryVersion as _retryVersion,
 } from "@/api/generated/orders/orders";
@@ -163,22 +162,6 @@ export async function generateImageSvg(
 }
 
 /**
- * List all coloring versions for an image
- */
-export async function listColoringVersions(imageId: number): Promise<ColoringVersionResponse[]> {
-  const response = await _listVersions(imageId, VersionType.coloring);
-  return extractData(response) as ColoringVersionResponse[];
-}
-
-/**
- * List all SVG versions for an image
- */
-export async function listSvgVersions(imageId: number): Promise<SvgVersionResponse[]> {
-  const response = await _listVersions(imageId, VersionType.svg);
-  return extractData(response) as SvgVersionResponse[];
-}
-
-/**
  * Select a coloring version as the default for an image
  */
 export async function selectColoringVersion(
@@ -203,16 +186,22 @@ export async function selectSvgVersion(
 /**
  * Retry a failed coloring version generation
  */
-export async function retryColoringVersion(versionId: number): Promise<ColoringVersionResponse> {
-  const response = await _retryVersion(VersionType.coloring, versionId);
+export async function retryColoringVersion(
+  imageId: number,
+  versionId: number
+): Promise<ColoringVersionResponse> {
+  const response = await _retryVersion(imageId, VersionType.coloring, versionId);
   return extractData(response) as ColoringVersionResponse;
 }
 
 /**
  * Retry a failed SVG version generation
  */
-export async function retrySvgVersion(versionId: number): Promise<SvgVersionResponse> {
-  const response = await _retryVersion(VersionType.svg, versionId);
+export async function retrySvgVersion(
+  imageId: number,
+  versionId: number
+): Promise<SvgVersionResponse> {
+  const response = await _retryVersion(imageId, VersionType.svg, versionId);
   return extractData(response) as SvgVersionResponse;
 }
 
@@ -225,7 +214,6 @@ export {
   useListOrders,
   useGetOrder,
   useGetOrderImage,
-  useListVersions,
   // Mutation hooks
   useSyncOrder,
   useFetchFromShopify,

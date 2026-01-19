@@ -27,8 +27,11 @@ export const COLORING_STATUS_DISPLAY: Record<string, { label: string; color: str
     label: "Runpod: Probíhá zpracování",
     color: "bg-yellow-100 text-yellow-800",
   },
+  runpod_completed: { label: "Runpod: dokončeno", color: "bg-green-100 text-green-800" },
+  storage_upload: { label: "Nahrávání na S3", color: "bg-blue-100 text-blue-800" },
   completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
   error: { label: "Chyba", color: "bg-red-100 text-red-800" },
+  runpod_cancelled: { label: "Runpod: Zrušeno", color: "bg-orange-100 text-orange-800" },
 };
 
 /**
@@ -42,6 +45,8 @@ export const SVG_STATUS_DISPLAY: Record<string, { label: string; color: string }
     label: "Vectorizer: Probíhá zpracování",
     color: "bg-yellow-100 text-yellow-800",
   },
+  vectorizer_completed: { label: "Vectorizer: dokončeno", color: "bg-green-100 text-green-800" },
+  storage_upload: { label: "Nahrávání na S3", color: "bg-blue-100 text-blue-800" },
   completed: { label: "Dokončeno", color: "bg-green-100 text-green-800" },
   error: { label: "Chyba", color: "bg-red-100 text-red-800" },
 };

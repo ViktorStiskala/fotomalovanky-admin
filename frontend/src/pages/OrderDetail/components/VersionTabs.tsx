@@ -2,7 +2,7 @@
  * Tab switcher for coloring and SVG versions with version lists.
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Icon } from "@/components/icons";
 import type { ColoringVersion, SvgVersion, SelectedVersionIds } from "@/lib/api";
 import {
@@ -11,6 +11,7 @@ import {
   getShapeStackingLabel,
   getGroupByLabel,
 } from "@/types";
+import { isColoringProcessing, isSvgProcessing } from "@/lib/statusHelpers";
 
 interface VersionTabsProps {
   coloringVersions: ColoringVersion[];
@@ -42,6 +43,28 @@ export function VersionTabs({
   const [activeTab, setActiveTab] = useState<"coloring" | "svg">(
     defaultTab || (svgVersions.length > 0 ? "svg" : "coloring")
   );
+
+  // Track previous version counts to detect new versions
+  const prevColoringCount = useRef(coloringVersions.length);
+  const prevSvgCount = useRef(svgVersions.length);
+
+  // Auto-switch tabs when a new processing version appears
+  useEffect(() => {
+    const coloringCount = coloringVersions.length;
+    const svgCount = svgVersions.length;
+
+    // New coloring version appeared and is processing → switch to coloring tab
+    if (coloringCount > prevColoringCount.current && isColoringProcessing(coloringVersions)) {
+      setActiveTab("coloring");
+    }
+    // New SVG version appeared and is processing → switch to SVG tab
+    else if (svgCount > prevSvgCount.current && isSvgProcessing(svgVersions)) {
+      setActiveTab("svg");
+    }
+
+    prevColoringCount.current = coloringCount;
+    prevSvgCount.current = svgCount;
+  }, [coloringVersions, svgVersions]);
 
   const selectedColoring = coloringVersions.find((cv) => cv.id === selectedVersionIds.coloring);
   const selectedSvg = svgVersions.find((sv) => sv.id === selectedVersionIds.svg);

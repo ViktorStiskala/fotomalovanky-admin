@@ -39,7 +39,9 @@ async def task_db_session() -> AsyncGenerator[AsyncSession]:
     async with session_maker() as session:
         try:
             yield session
-        finally:
-            pass  # Session cleanup handled by context manager
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
     # Dispose engine to release all connections back to PostgreSQL
     await engine.dispose()

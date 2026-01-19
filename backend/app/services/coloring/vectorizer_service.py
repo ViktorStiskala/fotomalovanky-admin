@@ -68,6 +68,7 @@ class VectorizerService:
         next_version = await self._get_next_version(image_id)
 
         svg_version = SvgVersion(
+            image_id=image.id,  # Direct reference for queries
             coloring_version_id=coloring_to_use.id,
             version=next_version,
             status=SvgProcessingStatus.QUEUED,
@@ -77,9 +78,8 @@ class VectorizerService:
         self.session.add(svg_version)
         await self.session.flush()
 
-        # Auto-select the new version
+        # Note: selected_svg_id is set by svg_generation_service when processing completes
         assert svg_version.id is not None
-        image.selected_svg_id = svg_version.id
 
         await self.session.commit()
 
@@ -147,6 +147,7 @@ class VectorizerService:
                 next_version = await self._get_next_version(img.id)
 
                 svg_version = SvgVersion(
+                    image_id=img.id,  # Direct reference for queries
                     coloring_version_id=coloring_to_use.id,
                     version=next_version,
                     status=SvgProcessingStatus.QUEUED,
@@ -156,8 +157,8 @@ class VectorizerService:
                 self.session.add(svg_version)
                 await self.session.flush()
 
+                # Note: selected_svg_id is set by svg_generation_service when processing completes
                 assert svg_version.id is not None
-                img.selected_svg_id = svg_version.id
                 version_ids.append(svg_version.id)
 
         if not version_ids:
@@ -210,23 +211,14 @@ class VectorizerService:
         return None
 
     async def _get_next_version(self, image_id: int) -> int:
-        """Get the next version number for an SVG version (across all colorings for this image)."""
-        # Get all coloring versions for this image
-        coloring_ids_result = await self.session.execute(
-            select(ColoringVersion.id).where(ColoringVersion.image_id == image_id)
-        )
-        coloring_ids = [row[0] for row in coloring_ids_result.fetchall()]
+        """Get the next version number for an SVG version.
 
-        if not coloring_ids:
-            return 1
-
+        Now a simple query since SvgVersion has image_id directly.
+        """
         result = await self.session.execute(
-            select(func.coalesce(func.max(SvgVersion.version), 0)).where(
-                SvgVersion.coloring_version_id.in_(coloring_ids)  # type: ignore[attr-defined]
-            )
+            select(func.coalesce(func.max(SvgVersion.version), 0)).where(SvgVersion.image_id == image_id)
         )
-        max_version = result.scalar() or 0
-        return max_version + 1
+        return (result.scalar() or 0) + 1
 
     @staticmethod
     async def get_incomplete_versions(session: AsyncSession) -> list[int]:

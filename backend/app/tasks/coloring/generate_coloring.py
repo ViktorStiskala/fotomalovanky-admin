@@ -5,13 +5,14 @@ import asyncio
 import dramatiq
 import structlog
 
-from app.models.enums import ColoringProcessingStatus
+from app.services.coloring.coloring_generation_service import ColoringGenerationService
 from app.services.coloring.coloring_service import ColoringService
-from app.services.external.mercure import MercureService
 from app.services.external.runpod import RunPodError, RunPodService
-from app.services.storage.paths import OrderStoragePaths
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
+from app.tasks.utils.background_tasks import BackgroundTasks, background_tasks
+from app.tasks.utils.processing_lock import RecordLockedError, RecordNotFoundError
 from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)
@@ -19,192 +20,49 @@ logger = structlog.get_logger(__name__)
 
 @task_recover(ColoringService.get_incomplete_versions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
-def generate_coloring(coloring_version_id: int) -> None:
-    """Generate a coloring book version for an image.
-
-    This task:
-    1. Sets status to PROCESSING immediately
-    2. Loads the ColoringVersion and associated Image
-    3. Submits to RunPod API (RUNPOD_SUBMITTING -> RUNPOD_SUBMITTED)
-    4. Polls for completion (RUNPOD_QUEUED -> RUNPOD_PROCESSING)
-    5. Saves output and updates status to COMPLETED
-    6. Sets as selected coloring version for the image
-    7. Publishes Mercure updates at each status change
-
-    Args:
-        coloring_version_id: ID of the ColoringVersion record to process
-    """
-    asyncio.run(_generate_coloring_async(coloring_version_id))
+def generate_coloring(coloring_version_id: int, *, is_recovery: bool = False) -> None:
+    """Generate a coloring book version for an image."""
+    # bg_tasks is injected by the @background_tasks decorator
+    asyncio.run(_generate_coloring_async(coloring_version_id, is_recovery=is_recovery))  # type: ignore[call-arg, arg-type]
 
 
-async def _generate_coloring_async(coloring_version_id: int) -> None:
-    """Async implementation of coloring generation."""
-    from app.models.coloring import ColoringVersion
-    from app.models.order import Image, LineItem, Order
-    from app.tasks.utils.processing_lock import acquire_processing_lock
-
-    mercure = MercureService()
+@background_tasks(timeout=30)
+async def _generate_coloring_async(
+    coloring_version_id: int,
+    *,
+    is_recovery: bool = False,
+    bg_tasks: BackgroundTasks,  # Injected by @background_tasks decorator
+) -> None:
+    """Async implementation - decorator handles bg_tasks injection and cleanup."""
+    mercure = MercurePublishService()
     runpod = RunPodService()
     storage = S3StorageService()
 
-    logger.info("Starting coloring generation", coloring_version_id=coloring_version_id)
+    logger.info(
+        "Starting coloring generation",
+        coloring_version_id=coloring_version_id,
+        is_recovery=is_recovery,
+    )
 
     async with task_db_session() as session:
-        # Acquire exclusive lock with race condition protection
-        lock_result = await acquire_processing_lock(
-            session,
-            ColoringVersion,
-            coloring_version_id,
-            completed_status=ColoringProcessingStatus.COMPLETED,
+        service = ColoringGenerationService(
+            session=session,
+            storage=storage,
+            runpod=runpod,
+            mercure_service=mercure,
+            bg_tasks=bg_tasks,
         )
-        if not lock_result.should_process:
-            return
-
-        coloring_version = lock_result.record
-        assert coloring_version is not None  # Type narrowing
-
-        # Set PROCESSING immediately (task has started)
-        coloring_version.status = ColoringProcessingStatus.PROCESSING
-        await session.commit()
-
-        # Load the image
-        image = await session.get(Image, coloring_version.image_id)
-        if not image:
-            logger.error("Image not found", image_id=coloring_version.image_id)
-            coloring_version.status = ColoringProcessingStatus.ERROR
-            await session.commit()
-            return
-        assert image.id is not None
-        image_id = image.id  # Capture for closures
-
-        # Load line item and order to get order_id
-        line_item = await session.get(LineItem, image.line_item_id)
-        if not line_item:
-            logger.error("LineItem not found", line_item_id=image.line_item_id)
-            coloring_version.status = ColoringProcessingStatus.ERROR
-            await session.commit()
-            return
-
-        # Get order for Mercure and storage paths
-        order = await session.get(Order, line_item.order_id)
-        if not order:
-            logger.error("Order not found", order_id=line_item.order_id)
-            coloring_version.status = ColoringProcessingStatus.ERROR
-            await session.commit()
-            return
-
-        assert order.id is not None
-        order_id = order.id  # ULID string for Mercure
-
-        # Publish initial PROCESSING status
-        await mercure.publish_image_status(
-            order_id=order_id,
-            image_id=image_id,
-            status_type="coloring",
-            version_id=coloring_version_id,
-            status=ColoringProcessingStatus.PROCESSING,
-        )
-
-        async def update_status(new_status: ColoringProcessingStatus) -> None:
-            """Helper to update status in DB and publish to Mercure."""
-            coloring_version.status = new_status
-            await session.commit()
-            await mercure.publish_image_status(
-                order_id=order_id,
-                image_id=image_id,
-                status_type="coloring",
-                version_id=coloring_version_id,
-                status=new_status,
-            )
 
         try:
-            # Verify source image exists
-            if not image.file_ref:
-                raise FileNotFoundError("Image not uploaded to S3 yet")
+            await service.process(coloring_version_id, is_recovery=is_recovery)
 
-            # Generate storage key for output using OrderStoragePaths
-            paths = OrderStoragePaths(order)
-            output_key = paths.coloring_version(line_item, image, coloring_version)
+        except RecordNotFoundError as e:
+            logger.error(str(e), coloring_version_id=coloring_version_id)
+            return
 
-            # SAFEGUARD: Check if we have an existing RunPod job_id to resume
-            job_id = coloring_version.runpod_job_id
-
-            if job_id:
-                # Resume polling existing job (task was interrupted mid-polling)
-                logger.info(
-                    "Resuming polling for existing RunPod job",
-                    coloring_version_id=coloring_version_id,
-                    job_id=job_id,
-                )
-            else:
-                # Read input image from S3
-                image_data = await storage.download(image.file_ref)
-
-                # Update status: RUNPOD_SUBMITTING
-                await update_status(ColoringProcessingStatus.RUNPOD_SUBMITTING)
-
-                # Submit to RunPod
-                job_id = await runpod.submit_job(
-                    image_data=image_data,
-                    megapixels=coloring_version.megapixels,
-                    steps=coloring_version.steps,
-                )
-
-                # Store job_id immediately after submission to enable resume
-                coloring_version.runpod_job_id = job_id
-                coloring_version.status = ColoringProcessingStatus.RUNPOD_SUBMITTED
-                await session.commit()
-
-                await mercure.publish_image_status(
-                    order_id=order_id,
-                    image_id=image_id,
-                    status_type="coloring",
-                    version_id=coloring_version_id,
-                    status=ColoringProcessingStatus.RUNPOD_SUBMITTED,
-                )
-
-            # Define callback for RunPod status changes
-            async def on_runpod_status_change(runpod_status: str) -> None:
-                """Handle RunPod status changes."""
-                if runpod_status == "IN_QUEUE":
-                    await update_status(ColoringProcessingStatus.RUNPOD_QUEUED)
-                elif runpod_status == "IN_PROGRESS":
-                    await update_status(ColoringProcessingStatus.RUNPOD_PROCESSING)
-
-            # Poll for completion with status callbacks
-            result_data = await runpod.poll_job(job_id, on_status_change=on_runpod_status_change)
-
-            # Upload result to S3
-            file_ref = await storage.upload(
-                upload_to=output_key,
-                data=result_data,
-                content_type="image/png",
-            )
-
-            # Update version record - clear job_id since we're done
-            coloring_version.file_ref = file_ref
-            coloring_version.runpod_job_id = None  # Clear to prevent reuse
-            coloring_version.status = ColoringProcessingStatus.COMPLETED
-
-            # Set as selected version for the image
-            image.selected_coloring_id = coloring_version.id
-
-            await session.commit()
-
-            # Publish image_status for COMPLETED
-            await mercure.publish_image_status(
-                order_id=order_id,
-                image_id=image_id,
-                status_type="coloring",
-                version_id=coloring_version_id,
-                status=ColoringProcessingStatus.COMPLETED,
-            )
-
-            logger.info(
-                "Coloring generation completed",
-                coloring_version_id=coloring_version_id,
-                s3_key=output_key,
-            )
+        except RecordLockedError as e:
+            logger.info(str(e), coloring_version_id=coloring_version_id)
+            return
 
         except (RunPodError, FileNotFoundError, OSError) as e:
             logger.error(
@@ -212,14 +70,5 @@ async def _generate_coloring_async(coloring_version_id: int) -> None:
                 coloring_version_id=coloring_version_id,
                 error=str(e),
             )
-            coloring_version.status = ColoringProcessingStatus.ERROR
-            await session.commit()
-            # Publish image_status for ERROR
-            await mercure.publish_image_status(
-                order_id=order_id,
-                image_id=image_id,
-                status_type="coloring",
-                version_id=coloring_version_id,
-                status=ColoringProcessingStatus.ERROR,
-            )
+            await service.mark_error(coloring_version_id)
             raise

@@ -75,9 +75,8 @@ class ColoringService:
         self.session.add(coloring_version)
         await self.session.flush()
 
-        # Auto-select the new version
+        # Note: selected_coloring_id is set by coloring_generation_service when processing completes
         assert coloring_version.id is not None
-        image.selected_coloring_id = coloring_version.id
 
         await self.session.commit()
 
@@ -151,8 +150,8 @@ class ColoringService:
             self.session.add(coloring_version)
             await self.session.flush()
 
+            # Note: selected_coloring_id is set by coloring_generation_service when processing completes
             assert coloring_version.id is not None
-            image.selected_coloring_id = coloring_version.id
             version_ids.append(coloring_version.id)
 
         await self.session.commit()

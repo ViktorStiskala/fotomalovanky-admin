@@ -5,7 +5,7 @@ import asyncio
 import dramatiq
 import structlog
 
-from app.services.external.mercure import MercureService
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.shopify_sync_service import ShopifySyncService
 from app.tasks.orders.order_ingestion import ingest_order
 from app.tasks.utils.task_db import task_db_session
@@ -30,7 +30,7 @@ def fetch_orders_from_shopify(limit: int = 20) -> None:
 
 async def _fetch_orders_async(limit: int) -> None:
     """Async implementation of fetch_orders_from_shopify."""
-    mercure = MercureService()
+    mercure = MercurePublishService()
 
     async with task_db_session() as session:
         service = ShopifySyncService(session)

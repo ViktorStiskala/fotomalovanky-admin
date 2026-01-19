@@ -12,6 +12,8 @@ from typing import Any, AsyncIterator
 import aioboto3
 import structlog
 from botocore.config import Config
+from botocore.exceptions import ClientError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import settings
 from app.models.types import S3ObjectRefData
@@ -47,6 +49,12 @@ class S3StorageService:
         ) as client:
             yield client
 
+    @retry(
+        retry=retry_if_exception_type((ClientError, OSError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
     async def upload(
         self,
         upload_to: str,
@@ -64,6 +72,10 @@ class S3StorageService:
 
         Returns:
             S3ObjectRefData with all metadata
+
+        Retries:
+            Automatically retries on ClientError or OSError (network issues)
+            with exponential backoff (1-10 seconds, 3 attempts).
         """
         async with self._get_client() as client:
             response = await client.put_object(

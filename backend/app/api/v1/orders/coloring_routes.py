@@ -111,27 +111,46 @@ async def generate_image_coloring(
 
 
 @router.post(
-    "/versions/{version_type}/{version_id}/retry",
+    "/images/{image_id}/versions/{version_type}/{version_id}/retry",
     response_model=ColoringVersionResponse | SvgVersionResponse,
     operation_id="retryVersion",
 )
 async def retry_version(
+    image_id: int,
     version_type: VersionType,
     version_id: int,
     coloring_service: ColoringServiceDep,
     vectorizer_service: VectorizerServiceDep,
+    image_service: ImageServiceDep,
+    mercure: MercureServiceDep,
 ) -> ColoringVersionResponse | SvgVersionResponse:
     """Retry a failed version generation with the same settings."""
     try:
         if version_type == VersionType.COLORING:
             coloring_version = await coloring_service.prepare_retry(version_id)
+            # Verify ownership
+            if coloring_version.image_id != image_id:
+                raise HTTPException(status_code=400, detail="Version does not belong to this image")
             assert coloring_version.id is not None
             generate_coloring.send(coloring_version.id)
+
+            # Get image for Mercure event
+            image = await image_service.get_image(image_id)
+            await mercure.publish_image_update(image.line_item.order.id, image_id)
+
             return ColoringVersionResponse.from_model(coloring_version)
         else:  # VersionType.SVG
             svg_version = await vectorizer_service.prepare_retry(version_id)
+            # Verify ownership
+            if svg_version.image_id != image_id:
+                raise HTTPException(status_code=400, detail="Version does not belong to this image")
             assert svg_version.id is not None
             generate_svg.send(svg_version.id)
+
+            # Get image for Mercure event
+            image = await image_service.get_image(image_id)
+            await mercure.publish_image_update(image.line_item.order.id, image_id)
+
             return SvgVersionResponse.from_model(svg_version)
     except (ColoringVersionNotFound, SvgVersionNotFound):
         raise HTTPException(status_code=404, detail=f"{version_type.capitalize()} version not found")

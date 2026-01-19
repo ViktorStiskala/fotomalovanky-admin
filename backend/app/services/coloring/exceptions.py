@@ -37,3 +37,9 @@ class NoImagesToProcess(ValidationError):
     """No images need processing."""
 
     pass
+
+
+class VersionNotCompleted(ValidationError):
+    """Version is not in completed state, cannot be selected."""
+
+    pass

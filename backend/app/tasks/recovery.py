@@ -36,7 +36,8 @@ async def _recover_stuck_tasks() -> int:
                         task=task_fn.actor_name,
                         version_id=version_id,
                     )
-                    task_fn.send(version_id)
+                    # Pass is_recovery=True so service knows to accept intermediate states
+                    task_fn.send(version_id, is_recovery=True)
                     total_recovered += 1
             except Exception as e:
                 logger.error(
