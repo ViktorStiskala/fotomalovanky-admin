@@ -5,14 +5,21 @@ import base64
 import io
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import httpx
 import structlog
 from PIL import Image
+from tenacity import RetryError
 
 from app.config import settings
+from app.models.enums import RunPodJobStatus
+from app.utils.request_retry import RequestRetryConfig, get_request_retrying
 
 logger = structlog.get_logger(__name__)
+
+# Retry config for polling requests
+POLL_RETRY_CONFIG = RequestRetryConfig(max_attempts=5, min_wait=1.0, max_wait=10.0)
 
 
 class RunPodError(Exception):
@@ -134,6 +141,38 @@ class RunPodService:
                 logger.error("RunPod request failed", error=str(e))
                 raise RunPodError(f"Request error: {e}") from e
 
+    async def _poll_status(self, client: httpx.AsyncClient, job_id: str) -> dict[str, Any]:
+        """Poll job status with retries on network errors.
+
+        Raises:
+            RunPodError: After max retries on network errors
+            httpx.HTTPStatusError: On HTTP errors (not retried)
+        """
+
+        async def fetch() -> dict[str, Any]:
+            response = await client.get(
+                f"{self._get_base_url()}/status/{job_id}",
+                headers=self._get_headers(),
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            return response.json()  # type: ignore[no-any-return]
+
+        try:
+            async for attempt in get_request_retrying(POLL_RETRY_CONFIG):
+                with attempt:
+                    if attempt.retry_state.attempt_number > 1:
+                        logger.warning(
+                            "Retrying RunPod poll",
+                            job_id=job_id,
+                            attempt=attempt.retry_state.attempt_number,
+                        )
+                    return await fetch()
+        except RetryError as e:
+            raise RunPodError(f"Failed to poll job status after {POLL_RETRY_CONFIG.max_attempts} retries") from e
+
+        raise RuntimeError("Unreachable")
+
     async def poll_job(
         self,
         job_id: str,
@@ -150,7 +189,7 @@ class RunPodService:
             Generated image bytes
 
         Raises:
-            RunPodError: If job fails
+            RunPodError: If job fails or network errors exceed max retries
             RunPodTimeoutError: If job times out
         """
         start_time = time.time()
@@ -162,52 +201,44 @@ class RunPodService:
                 if elapsed > settings.runpod_timeout:
                     raise RunPodTimeoutError(f"Job {job_id} timed out after {settings.runpod_timeout}s")
 
-                try:
-                    response = await client.get(
-                        f"{self._get_base_url()}/status/{job_id}",
-                        headers=self._get_headers(),
-                        timeout=30.0,
+                result = await self._poll_status(client, job_id)
+
+                status = result.get("status")
+                logger.debug("RunPod job status", job_id=job_id, status=status)
+
+                # Call callback if status changed
+                if on_status_change and status != last_status:
+                    last_status = status
+                    if status in (RunPodJobStatus.IN_QUEUE, RunPodJobStatus.IN_PROGRESS):
+                        await on_status_change(status)
+
+                if status == RunPodJobStatus.COMPLETED:
+                    output = result.get("output", {})
+                    # Handle nested output structure
+                    if "output" in output:
+                        output = output["output"]
+
+                    image_b64 = output.get("image")
+                    if not image_b64:
+                        raise RunPodError("No image in completed output")
+
+                    execution_time = result.get("executionTime", 0) / 1000
+                    logger.info(
+                        "RunPod job completed",
+                        job_id=job_id,
+                        execution_time=f"{execution_time:.2f}s",
                     )
-                    response.raise_for_status()
-                    result = response.json()
+                    return base64.b64decode(image_b64)
 
-                    status = result.get("status")
-                    logger.debug("RunPod job status", job_id=job_id, status=status)
+                elif status == RunPodJobStatus.FAILED:
+                    error = result.get("error", "Unknown error")
+                    raise RunPodError(f"Job failed: {error}")
 
-                    # Call callback if status changed
-                    if on_status_change and status != last_status:
-                        last_status = status
-                        if status in ("IN_QUEUE", "IN_PROGRESS"):
-                            await on_status_change(status)
+                elif status == RunPodJobStatus.CANCELLED:
+                    raise RunPodError("Job was cancelled")
 
-                    if status == "COMPLETED":
-                        output = result.get("output", {})
-                        # Handle nested output structure
-                        if "output" in output:
-                            output = output["output"]
-
-                        image_b64 = output.get("image")
-                        if not image_b64:
-                            raise RunPodError("No image in completed output")
-
-                        execution_time = result.get("executionTime", 0) / 1000
-                        logger.info(
-                            "RunPod job completed",
-                            job_id=job_id,
-                            execution_time=f"{execution_time:.2f}s",
-                        )
-                        return base64.b64decode(image_b64)
-
-                    elif status == "FAILED":
-                        error = result.get("error", "Unknown error")
-                        raise RunPodError(f"Job failed: {error}")
-
-                    elif status in ("IN_QUEUE", "IN_PROGRESS"):
-                        await asyncio.sleep(settings.runpod_poll_interval)
-                    else:
-                        # Unknown status, keep polling
-                        await asyncio.sleep(settings.runpod_poll_interval)
-
-                except httpx.RequestError as e:
-                    logger.warning("RunPod poll request failed, retrying", error=str(e))
+                elif status in (RunPodJobStatus.IN_QUEUE, RunPodJobStatus.IN_PROGRESS):
                     await asyncio.sleep(settings.runpod_poll_interval)
+                else:
+                    # Unknown status - raise error instead of polling forever
+                    raise RunPodError(f"Unknown job status: {status}")

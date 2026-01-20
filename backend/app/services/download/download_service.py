@@ -7,12 +7,6 @@ from urllib.parse import urlparse
 
 import httpx
 import structlog
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from app.config import ProxyConfig
 from app.services.download.config import (
@@ -20,8 +14,8 @@ from app.services.download.config import (
     BASE_HEADERS,
     RETRYABLE_STATUS_CODES,
     USER_AGENTS,
-    RetryConfig,
 )
+from app.utils.request_retry import RequestRetryConfig, get_request_retrying
 
 logger = structlog.get_logger(__name__)
 
@@ -44,7 +38,7 @@ class DownloadService:
     def __init__(
         self,
         timeout: float = 30.0,
-        retries: int | RetryConfig | Literal[False] | None = None,
+        retries: int | RequestRetryConfig | Literal[False] | None = None,
     ) -> None:
         """Initialize download service.
 
@@ -54,7 +48,7 @@ class DownloadService:
                 - None: Use defaults (3 attempts, 1-10s exponential backoff)
                 - False: Disable retries entirely
                 - int: Number of attempts with default backoff
-                - RetryConfig: Full customization
+                - RequestRetryConfig: Full customization
         """
         from app.config import settings
 
@@ -70,31 +64,16 @@ class DownloadService:
 
     def _parse_retry_config(
         self,
-        retries: int | RetryConfig | Literal[False] | None,
-    ) -> RetryConfig | None:
-        """Parse retry configuration into RetryConfig or None (disabled)."""
+        retries: int | RequestRetryConfig | Literal[False] | None,
+    ) -> RequestRetryConfig | None:
+        """Parse retry configuration into RequestRetryConfig or None (disabled)."""
         if retries is None:
-            return RetryConfig()  # defaults
+            return RequestRetryConfig()  # defaults
         if retries is False:
             return None  # disabled
         if isinstance(retries, int):
-            return RetryConfig(max_attempts=retries)
-        return retries  # RetryConfig instance
-
-    def _get_retrying(self) -> AsyncRetrying:
-        """Get configured AsyncRetrying instance."""
-        if self._retry_config is None:
-            raise RuntimeError("Retries are disabled")
-        return AsyncRetrying(
-            retry=retry_if_exception_type(httpx.RequestError),
-            stop=stop_after_attempt(self._retry_config.max_attempts),
-            wait=wait_exponential(
-                multiplier=self._retry_config.multiplier,
-                min=self._retry_config.min_wait,
-                max=self._retry_config.max_wait,
-            ),
-            reraise=True,
-        )
+            return RequestRetryConfig(max_attempts=retries)
+        return retries  # RequestRetryConfig instance
 
     async def close(self) -> None:
         """Close the HTTP client. Call when done with the service."""
@@ -185,7 +164,7 @@ class DownloadService:
         if self._retry_config is None:
             return await fetch()
 
-        async for attempt in self._get_retrying():
+        async for attempt in get_request_retrying(self._retry_config):
             with attempt:
                 return await fetch()
 
@@ -215,7 +194,7 @@ class DownloadService:
         if self._retry_config is None:
             return await fetch()
 
-        async for attempt in self._get_retrying():
+        async for attempt in get_request_retrying(self._retry_config):
             with attempt:
                 return await fetch()
 

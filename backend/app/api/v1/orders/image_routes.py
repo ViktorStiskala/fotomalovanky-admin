@@ -15,6 +15,7 @@ from app.services.coloring.exceptions import (
     VersionNotCompleted,
     VersionOwnershipError,
 )
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import (
     ImageNotFound,
     ImageNotFoundInOrder,
@@ -65,7 +66,7 @@ async def select_version(
         else:  # VersionType.SVG
             image = await service.select_svg_version(image_id, version_id)
 
-        # Emit Mercure event for selection change
+        # Notify frontend about selection change
         order_id = image.line_item.order.id
         logger.info(
             "Emitting selection change event",
@@ -73,7 +74,7 @@ async def select_version(
             order_id=order_id,
             version_type=version_type,
         )
-        await mercure.publish_image_update(order_id, image_id)
+        await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 
         return StatusResponse(status="ok", message=f"Selected {version_type} version {version_id}")
     except ImageNotFound:

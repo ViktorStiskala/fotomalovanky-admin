@@ -1,27 +1,16 @@
 """Configuration constants for download service."""
 
-from dataclasses import dataclass
-
-
-@dataclass
-class RetryConfig:
-    """Configuration for download retries."""
-
-    max_attempts: int = 3
-    min_wait: float = 1.0
-    max_wait: float = 10.0
-    multiplier: float = 1.0
-
-
 # HTTP status codes that indicate bot protection / rate limiting
 # These trigger proxy fallback (not tenacity retries)
-RETRYABLE_STATUS_CODES = frozenset({
-    403,  # Forbidden (Cloudflare challenge, bot protection)
-    429,  # Too Many Requests (rate limiting)
-    525,  # Cloudflare: SSL handshake failed
-    526,  # Cloudflare: Invalid SSL certificate
-    530,  # Cloudflare: Origin DNS error
-})
+RETRYABLE_STATUS_CODES = frozenset(
+    {
+        403,  # Forbidden (Cloudflare challenge, bot protection)
+        429,  # Too Many Requests (rate limiting)
+        525,  # Cloudflare: SSL handshake failed
+        526,  # Cloudflare: Invalid SSL certificate
+        530,  # Cloudflare: Origin DNS error
+    }
+)
 
 # User agent strings for different browsers/platforms
 # Deterministically selected per hostname to maintain consistency

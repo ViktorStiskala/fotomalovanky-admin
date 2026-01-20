@@ -4,8 +4,9 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
-from sqlalchemy import Uuid
+from sqlalchemy import Uuid, and_, or_, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.sql.expression import ColumnElement
 from sqlalchemy.types import TypeDecorator
 from ulid import ULID
 
@@ -56,9 +57,56 @@ class S3ObjectRef(TypeDecorator[S3ObjectRefData | None]):
     impl = JSONB
     cache_ok = True
 
-    def process_bind_param(
-        self, value: S3ObjectRefData | dict[str, Any] | None, dialect: Any
-    ) -> dict[str, Any] | None:
+    class comparator_factory(TypeDecorator.Comparator):  # type: ignore[type-arg]
+        """Custom comparator for S3ObjectRef columns.
+
+        Handles JSONB columns that can be SQL NULL or contain JSON null.
+        Overrides comparison operators so `== None` and `.is_(None)` check for both.
+
+        Usage:
+            .where(Model.file_ref.is_(None))      # nullish (SQL NULL or JSON null)
+            .where(Model.file_ref == None)        # same as above
+            .where(Model.file_ref.is_not(None))   # not nullish
+            .where(Model.file_ref != None)        # same as above
+        """
+
+        def _nullish(self) -> ColumnElement[bool]:
+            """SQL NULL or JSONB literal null."""
+            # Use parent methods directly to avoid recursion
+            return or_(
+                super().is_(None),  # type: ignore[arg-type]
+                super().__eq__(text("'null'::jsonb")),  # type: ignore[arg-type]
+            )
+
+        def _not_nullish(self) -> ColumnElement[bool]:
+            """Neither SQL NULL nor JSONB literal null."""
+            # Use parent methods directly to avoid recursion
+            return and_(
+                super().is_not(None),  # type: ignore[arg-type]
+                super().__ne__(text("'null'::jsonb")),  # type: ignore[arg-type]
+            )
+
+        def __eq__(self, other: object) -> ColumnElement[bool]:  # type: ignore[override]
+            if other is None:
+                return self._nullish()
+            return super().__eq__(other)  # type: ignore[return-value]
+
+        def __ne__(self, other: object) -> ColumnElement[bool]:  # type: ignore[override]
+            if other is None:
+                return self._not_nullish()
+            return super().__ne__(other)  # type: ignore[return-value]
+
+        def is_(self, other: object) -> ColumnElement[bool]:
+            if other is None:
+                return self._nullish()
+            return super().is_(other)  # type: ignore[return-value]
+
+        def is_not(self, other: object) -> ColumnElement[bool]:
+            if other is None:
+                return self._not_nullish()
+            return super().is_not(other)  # type: ignore[return-value]
+
+    def process_bind_param(self, value: S3ObjectRefData | dict[str, Any] | None, dialect: Any) -> dict[str, Any] | None:
         """Convert S3ObjectRefData to dict for storage."""
         if value is None:
             return None

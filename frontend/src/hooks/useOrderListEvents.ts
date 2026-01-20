@@ -2,15 +2,7 @@ import { useCallback } from "react";
 import { queryClient } from "@/lib/queryClient";
 import { useMercure } from "./useMercure";
 import { getGetOrderQueryKey, getListOrdersQueryKey } from "@/api/generated/orders/orders";
-import type {
-  ImageStatusEvent,
-  ImageUpdateEvent,
-  ListUpdateEvent,
-  OrderUpdateEvent,
-} from "@/api/generated/schemas";
-
-// Union type for all Mercure events
-type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | OrderUpdateEvent;
+import type { ListUpdateEvent } from "@/api/generated/schemas";
 
 /**
  * Custom hook that subscribes to Mercure SSE events for the orders list.
@@ -24,27 +16,28 @@ type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | Orde
  * 3. Frontend invalidates query cache
  * 4. TanStack Query refetches fresh data from API
  *
- * Note: `image_status` events are ignored here as they only affect detail views.
+ * ListUpdateEvent behavior:
+ * - order_ids empty: Full refresh (Order was created/deleted)
+ * - order_ids populated: Targeted refresh for specific orders
  */
 export function useOrderListEvents(): void {
   const handleMessage = useCallback((data: unknown) => {
-    const event = data as MercureEvent;
+    const event = data as ListUpdateEvent;
     console.log("[Mercure] Order list event received:", event);
 
-    // image_status events don't affect the list view
-    if (event.type === "image_status") {
+    // Only handle list_update events on "orders" topic
+    if (event.type !== "list_update") {
       return;
     }
 
-    // Invalidate the orders list query to trigger a refetch
-    queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
-
-    // If it's an update to a specific order, also invalidate that order's query
-    if (event.type === "order_update") {
-      queryClient.invalidateQueries({
-        queryKey: getGetOrderQueryKey(event.order_id),
-      });
+    // If order_ids is provided and non-empty, invalidate specific orders
+    if (event.order_ids && event.order_ids.length > 0) {
+      for (const orderId of event.order_ids) {
+        queryClient.invalidateQueries({ queryKey: getGetOrderQueryKey(orderId) });
+      }
     }
+    // Always invalidate the orders list
+    queryClient.invalidateQueries({ queryKey: getListOrdersQueryKey() });
   }, []);
 
   useMercure("orders", handleMessage);

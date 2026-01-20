@@ -3,30 +3,30 @@
 Handles RunPod processing and S3 upload with:
 - Short-lived database locks (only during state transitions)
 - State verification before each transition (handles race conditions)
-- Background Mercure publishes (non-blocking)
+- Automatic Mercure event publishing via TrackedAsyncSession
 - Recovery support (can resume from any intermediate state)
 """
 
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion
-from app.models.enums import ColoringProcessingStatus, RunPodJobStatus, VersionType
+from app.models.enums import ColoringProcessingStatus, RunPodJobStatus
 from app.models.order import Image, LineItem, Order
 from app.services.exceptions import UnexpectedStatusError
-from app.services.external.runpod import RunPodService
-from app.services.mercure.contexts import ImageStatusContext
-from app.services.mercure.publish_service import MercurePublishService
+from app.services.external.runpod import RunPodError, RunPodService
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.storage.paths import OrderStoragePaths
 from app.services.storage.storage_service import S3StorageService
-from app.tasks.utils.background_tasks import BackgroundTasks
-from app.tasks.utils.processing_lock import ProcessingLock
+from app.tasks.utils.processing_lock import ProcessingLock, RecordLockedError, RecordNotFoundError
 
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(ImageUpdateEvent)
 class ColoringGenerationService:
     """Service for processing coloring generation via RunPod.
 
@@ -34,30 +34,59 @@ class ColoringGenerationService:
     - Lock only during state transitions
     - Verify current status matches expected before updating
     - If status differs, another worker modified it - abort gracefully
-    - Mercure publishes are scheduled as background tasks (non-blocking) when bg_tasks provided
+    - Mercure events are published automatically via TrackedAsyncSession
     """
+
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
 
     def __init__(
         self,
-        session: AsyncSession,
+        session: TrackedAsyncSession,
         storage: S3StorageService,
         runpod: RunPodService,
-        mercure_service: MercurePublishService,
-        bg_tasks: BackgroundTasks | None = None,
     ):
         self.session = session
         self.storage = storage
         self.runpod = runpod
-        self.mercure_service = mercure_service
-        self.bg_tasks = bg_tasks
 
-    async def process(self, coloring_version_id: int, *, is_recovery: bool = False) -> None:
+    async def process(
+        self,
+        coloring_version_id: int,
+        *,
+        order_id: str,
+        image_id: int,
+        is_recovery: bool = False,
+    ) -> None:
         """Process a coloring version.
 
         Args:
             coloring_version_id: ID of the ColoringVersion to process
+            order_id: Order ULID for Mercure context
+            image_id: Image ID for Mercure context
             is_recovery: True if called from recovery.py (affects expected states)
         """
+        # MUST be first line - sets context for Mercure event publishing
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
+
+        try:
+            await self._process_impl(coloring_version_id, is_recovery=is_recovery)
+        except (RunPodError, FileNotFoundError, OSError) as e:
+            logger.error(
+                "Coloring generation failed",
+                coloring_version_id=coloring_version_id,
+                error=str(e),
+            )
+            await self._mark_error(coloring_version_id)
+            raise
+        except RecordNotFoundError as e:
+            logger.error(str(e), coloring_version_id=coloring_version_id)
+            return
+        except RecordLockedError as e:
+            logger.info(str(e), coloring_version_id=coloring_version_id)
+            return
+
+    async def _process_impl(self, coloring_version_id: int, *, is_recovery: bool = False) -> None:
+        """Internal implementation of coloring processing."""
         locker = ProcessingLock(
             self.session,
             ColoringVersion,
@@ -68,6 +97,16 @@ class ColoringGenerationService:
         async with locker.acquire() as lock:
             version = lock.record
             assert version is not None
+
+            if is_recovery:
+                logger.warning(
+                    "Recovering coloring task",
+                    version_id=version.id,
+                    status=version.status.value,
+                    has_runpod_job_id=version.runpod_job_id is not None,
+                    runpod_job_id=version.runpod_job_id,
+                    has_file_ref=version.file_ref is not None,
+                )
 
             if version.file_ref is not None:
                 logger.warning(
@@ -105,7 +144,6 @@ class ColoringGenerationService:
                     status=ColoringProcessingStatus.PROCESSING,
                     started_at=datetime.now(UTC),
                 )
-                current_status = ColoringProcessingStatus.PROCESSING
 
         # === OUTSIDE LOCK: Load related objects ===
         image = await self.session.get(Image, image_id)
@@ -120,24 +158,8 @@ class ColoringGenerationService:
         if not order:
             raise ValueError(f"Order {line_item.order_id} not found")
 
-        assert order.id is not None
-        assert image.id is not None
-
-        # Create Mercure publishing context (non-blocking if bg_tasks provided)
-        mercure = ImageStatusContext(
-            service=self.mercure_service,
-            bg_tasks=self.bg_tasks,
-            order_id=order.id,
-            image_id=image.id,
-            version_id=coloring_version_id,
-            status_type=VersionType.COLORING,
-        )
-
         if not image.file_ref:
             raise FileNotFoundError("Image not uploaded to S3 yet")
-
-        # Publish current status
-        mercure.publish(current_status)
 
         # === LOCK 2: Submit to RunPod (if no existing job) ===
         if existing_job_id:
@@ -162,8 +184,6 @@ class ColoringGenerationService:
 
                 await lock.update_record(status=ColoringProcessingStatus.RUNPOD_SUBMITTING)
 
-            mercure.publish(ColoringProcessingStatus.RUNPOD_SUBMITTING)
-
             # Submit to RunPod OUTSIDE lock
             job_id = await self.runpod.submit_job(
                 image_data=image_data,
@@ -178,14 +198,8 @@ class ColoringGenerationService:
                     status=ColoringProcessingStatus.RUNPOD_SUBMITTED,
                 )
 
-            mercure.publish(ColoringProcessingStatus.RUNPOD_SUBMITTED)
-
         # === OUTSIDE LOCK: Poll RunPod (long-running) ===
-        last_known_status = ColoringProcessingStatus.RUNPOD_SUBMITTED
-
         async def on_runpod_status(runpod_status: str) -> None:
-            nonlocal last_known_status
-
             # Map RunPod status to our status
             if runpod_status == RunPodJobStatus.IN_QUEUE:
                 new_status = ColoringProcessingStatus.RUNPOD_QUEUED
@@ -193,6 +207,13 @@ class ColoringGenerationService:
                 new_status = ColoringProcessingStatus.RUNPOD_PROCESSING
             else:
                 return
+
+            logger.info(
+                "Updating status from RunPod callback",
+                version_id=coloring_version_id,
+                runpod_status=runpod_status,
+                new_status=new_status.value,
+            )
 
             async with locker.acquire() as lock:
                 version = lock.record
@@ -202,16 +223,17 @@ class ColoringGenerationService:
                     logger.warning(
                         "Status changed unexpectedly during polling",
                         version_id=coloring_version_id,
-                        expected=last_known_status.value,
                         actual=version.status.value,
                     )
-                    last_known_status = version.status
                     return
 
+                logger.info(
+                    "Updating coloring version status",
+                    version_id=coloring_version_id,
+                    old_status=version.status.value,
+                    new_status=new_status.value,
+                )
                 await lock.update_record(status=new_status)
-                last_known_status = new_status
-
-            mercure.publish(new_status)
 
         result_data = await self.runpod.poll_job(job_id, on_status_change=on_runpod_status)
 
@@ -230,8 +252,6 @@ class ColoringGenerationService:
                 )
                 return
 
-        mercure.publish(ColoringProcessingStatus.RUNPOD_COMPLETED)
-
         # === LOCK 4: Verify RUNPOD_COMPLETED and mark STORAGE_UPLOAD ===
         async with locker.acquire() as lock:
             try:
@@ -246,8 +266,6 @@ class ColoringGenerationService:
                     actual=e.actual.value,
                 )
                 return
-
-        mercure.publish(ColoringProcessingStatus.STORAGE_UPLOAD)
 
         # === OUTSIDE LOCK: Upload to S3 ===
         # Reload version to get the version object for path generation
@@ -281,14 +299,16 @@ class ColoringGenerationService:
                 )
                 return
 
+            # Auto-select this coloring version
             image.selected_coloring_id = coloring_version_id
-
-        mercure.publish(ColoringProcessingStatus.COMPLETED)
 
         logger.info("Coloring generation completed", version_id=coloring_version_id, s3_key=output_key)
 
-    async def mark_error(self, coloring_version_id: int) -> None:
-        """Mark version as ERROR (called by task on exception)."""
+    async def _mark_error(self, coloring_version_id: int) -> None:
+        """Mark version as ERROR (internal - called on exception).
+
+        Context must already be set by caller (process method).
+        """
         locker = ProcessingLock(
             self.session,
             ColoringVersion,

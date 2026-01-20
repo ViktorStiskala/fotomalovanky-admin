@@ -7,23 +7,21 @@ import {
   getOrderImage,
 } from "@/api/generated/orders/orders";
 import type {
-  ImageStatusEvent,
   ImageUpdateEvent,
-  ListUpdateEvent,
   OrderDetailResponse,
   OrderUpdateEvent,
 } from "@/api/generated/schemas";
 
-// Union type for all Mercure events
-type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | OrderUpdateEvent;
+// Union type for events on the orders/{orderId} topic
+// Note: ListUpdateEvent only goes to "orders" topic, not "orders/{orderId}"
+type OrderEvent = ImageUpdateEvent | OrderUpdateEvent;
 
 /**
  * Custom hook that subscribes to Mercure SSE events for a specific order.
  *
- * Handles three types of events:
+ * Handles two types of events:
  * - `order_update`: Full refetch of order data (structural changes like COMPLETED, ERROR, new version)
- * - `image_status`: Efficient single image update (status-only changes during processing)
- * - `image_update`: Efficient single image update (selection changes, metadata updates)
+ * - `image_update`: Efficient single image update (status changes, selection changes, metadata updates)
  *
  * This enables real-time status updates as background workers process the order,
  * with minimal network overhead during frequent status changes.
@@ -33,13 +31,14 @@ type MercureEvent = ImageStatusEvent | ImageUpdateEvent | ListUpdateEvent | Orde
 export function useOrderEvents(orderId: string): void {
   const handleMessage = useCallback(
     async (data: unknown) => {
-      const event = data as MercureEvent;
+      const event = data as OrderEvent;
       console.log(`[Mercure] Order ${orderId} event received:`, event);
 
-      if (event.type === "image_status" || event.type === "image_update") {
+      if (event.type === "image_update") {
         // Efficient update: fetch only the updated image
+        const imageEvent = event as ImageUpdateEvent;
         try {
-          const response = await getOrderImage(orderId, event.image_id);
+          const response = await getOrderImage(orderId, imageEvent.image_id);
 
           // Handle the response (may have status/data structure from Orval)
           const imageData = "data" in response ? response.data : response;
@@ -57,7 +56,9 @@ export function useOrderEvents(orderId: string): void {
                 ...orderData,
                 line_items: orderData.line_items.map((li) => ({
                   ...li,
-                  images: li.images.map((img) => (img.id === event.image_id ? imageData : img)),
+                  images: li.images.map((img) =>
+                    img.id === imageEvent.image_id ? imageData : img
+                  ),
                 })),
               };
 

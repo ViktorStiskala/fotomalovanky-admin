@@ -169,13 +169,17 @@ class RecordLock(Generic[TModel]):
             return self
 
         except (OperationalError, DBAPIError) as e:
+            # Rollback savepoint before re-raising - transaction is aborted after lock failure
+            if self._tx is not None:
+                await self._tx.rollback()
+                self._tx = None
             txt = str(e).lower()
             if "lock" in txt or "could not obtain lock" in txt:
                 raise RecordLockedError(f"{self.name}: {self._predicate_to_text()} locked by another worker") from e
             raise
 
         except BaseException:
-            # Covers RecordNotFoundError, RecordLockedError, and any other exception
+            # Covers RecordNotFoundError and any other exception
             # __aexit__ is NOT called if __aenter__ raises, so cleanup here
             if self._tx is not None:
                 await self._tx.rollback()

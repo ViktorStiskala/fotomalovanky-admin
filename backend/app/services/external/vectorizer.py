@@ -2,10 +2,15 @@
 
 import httpx
 import structlog
+from tenacity import RetryError
 
 from app.config import settings
+from app.utils.request_retry import RequestRetryConfig, get_request_retrying
 
 logger = structlog.get_logger(__name__)
+
+# Retry config for vectorizer requests (longer timeout, fewer retries)
+VECTORIZER_RETRY_CONFIG = RequestRetryConfig(max_attempts=3, min_wait=2.0, max_wait=10.0)
 
 
 class VectorizerError(Exception):
@@ -49,7 +54,7 @@ class VectorizerApiService:
             SVG content as bytes
 
         Raises:
-            VectorizerError: If vectorization fails
+            VectorizerError: If vectorization fails or network errors exceed max retries
             VectorizerBadRequestError: If the request is invalid (HTTP 400)
         """
         # Vectorizer options
@@ -59,39 +64,55 @@ class VectorizerApiService:
             "output.parameterized_shapes.flatten": "true",
         }
 
-        async with httpx.AsyncClient() as client:
-            try:
-                files = {"image": (filename, image_data, "image/png")}
+        async def make_request(client: httpx.AsyncClient) -> bytes:
+            files = {"image": (filename, image_data, "image/png")}
 
-                response = await client.post(
-                    settings.vectorizer_url,
-                    files=files,
-                    data=options,
-                    auth=(settings.vectorizer_api_key, settings.vectorizer_api_secret),
-                    timeout=120.0,  # Vectorization can take a while
+            response = await client.post(
+                settings.vectorizer_url,
+                files=files,
+                data=options,
+                auth=(settings.vectorizer_api_key, settings.vectorizer_api_secret),
+                timeout=120.0,  # Vectorization can take a while
+            )
+
+            if response.status_code == 200:
+                logger.info("Vectorized image to SVG", size=len(response.content))
+                return response.content
+            elif response.status_code == 400:
+                # Bad request - invalid payload, don't retry
+                error_body = response.text[:1000] if response.text else "No response body"
+                logger.error(
+                    "Vectorizer API bad request",
+                    status_code=response.status_code,
+                    response_body=error_body,
+                )
+                raise VectorizerBadRequestError(
+                    f"Vectorizer API returned status 400 (bad request): {error_body}"
+                )
+            else:
+                error_body = response.text[:1000] if response.text else "No response body"
+                logger.error(
+                    "Vectorizer API error",
+                    status_code=response.status_code,
+                    response_body=error_body,
+                )
+                raise VectorizerError(
+                    f"Vectorizer API returned status {response.status_code}: {error_body}"
                 )
 
-                if response.status_code == 200:
-                    logger.info("Vectorized image to SVG", size=len(response.content))
-                    return response.content
-                elif response.status_code == 400:
-                    # Bad request - invalid payload, don't retry
-                    error_body = response.text[:1000] if response.text else "No response body"
-                    logger.error(
-                        "Vectorizer API bad request",
-                        status_code=response.status_code,
-                        response_body=error_body,
-                    )
-                    raise VectorizerBadRequestError(f"Vectorizer API returned status 400 (bad request): {error_body}")
-                else:
-                    error_body = response.text[:1000] if response.text else "No response body"
-                    logger.error(
-                        "Vectorizer API error",
-                        status_code=response.status_code,
-                        response_body=error_body,
-                    )
-                    raise VectorizerError(f"Vectorizer API returned status {response.status_code}: {error_body}")
+        try:
+            async with httpx.AsyncClient() as client:
+                async for attempt in get_request_retrying(VECTORIZER_RETRY_CONFIG):
+                    with attempt:
+                        if attempt.retry_state.attempt_number > 1:
+                            logger.warning(
+                                "Retrying vectorizer request",
+                                attempt=attempt.retry_state.attempt_number,
+                            )
+                        return await make_request(client)
+        except RetryError as e:
+            raise VectorizerError(
+                f"Vectorizer request failed after {VECTORIZER_RETRY_CONFIG.max_attempts} retries"
+            ) from e
 
-            except httpx.RequestError as e:
-                logger.error("Vectorizer request failed", error=str(e))
-                raise VectorizerError(f"Request error: {e}") from e
+        raise RuntimeError("Unreachable")

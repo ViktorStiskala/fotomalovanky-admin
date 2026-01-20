@@ -3,49 +3,100 @@
 Handles Vectorizer.ai processing and S3 upload with:
 - Short-lived database locks (only during state transitions)
 - State verification before each transition
-- Background Mercure publishes (non-blocking)
+- Automatic Mercure event publishing via TrackedAsyncSession
 - Recovery support
 """
 
 from datetime import UTC, datetime
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion, SvgVersion
-from app.models.enums import SvgProcessingStatus, VersionType
+from app.models.enums import SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
 from app.services.exceptions import UnexpectedStatusError
-from app.services.external.vectorizer import VectorizerApiService
-from app.services.mercure.contexts import ImageStatusContext
-from app.services.mercure.publish_service import MercurePublishService
+from app.services.external.vectorizer import (
+    VectorizerApiService,
+    VectorizerBadRequestError,
+    VectorizerError,
+)
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.storage.paths import OrderStoragePaths
 from app.services.storage.storage_service import S3StorageService
-from app.tasks.utils.background_tasks import BackgroundTasks
-from app.tasks.utils.processing_lock import ProcessingLock
+from app.tasks.utils.processing_lock import ProcessingLock, RecordLockedError, RecordNotFoundError
 
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(ImageUpdateEvent)
 class SvgGenerationService:
-    """Service for processing SVG vectorization via Vectorizer.ai."""
+    """Service for processing SVG vectorization via Vectorizer.ai.
+
+    Mercure events are published automatically via TrackedAsyncSession
+    when status fields change.
+    """
+
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
 
     def __init__(
         self,
-        session: AsyncSession,
+        session: TrackedAsyncSession,
         storage: S3StorageService,
         vectorizer: VectorizerApiService,
-        mercure_service: MercurePublishService,
-        bg_tasks: BackgroundTasks | None = None,
     ):
         self.session = session
         self.storage = storage
         self.vectorizer = vectorizer
-        self.mercure_service = mercure_service
-        self.bg_tasks = bg_tasks
 
-    async def process(self, svg_version_id: int, *, is_recovery: bool = False) -> None:
-        """Process an SVG version."""
+    async def process(
+        self,
+        svg_version_id: int,
+        *,
+        order_id: str,
+        image_id: int,
+        is_recovery: bool = False,
+    ) -> None:
+        """Process an SVG version.
+
+        Args:
+            svg_version_id: ID of the SvgVersion to process
+            order_id: Order ULID for Mercure context
+            image_id: Image ID for Mercure context
+            is_recovery: True if called from recovery.py (affects expected states)
+        """
+        # MUST be first line - sets context for Mercure event publishing
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
+
+        try:
+            await self._process_impl(svg_version_id, is_recovery=is_recovery)
+        except VectorizerBadRequestError as e:
+            # Bad request - don't retry, just mark as error
+            logger.error(
+                "SVG vectorization failed (bad request)",
+                svg_version_id=svg_version_id,
+                error=str(e),
+            )
+            await self._mark_error(svg_version_id)
+            raise
+        except (VectorizerError, FileNotFoundError, OSError) as e:
+            logger.error(
+                "SVG generation failed",
+                svg_version_id=svg_version_id,
+                error=str(e),
+            )
+            await self._mark_error(svg_version_id)
+            raise
+        except RecordNotFoundError as e:
+            logger.error(str(e), svg_version_id=svg_version_id)
+            return
+        except RecordLockedError as e:
+            logger.info(str(e), svg_version_id=svg_version_id)
+            return
+
+    async def _process_impl(self, svg_version_id: int, *, is_recovery: bool = False) -> None:
+        """Internal implementation of SVG processing."""
         locker = ProcessingLock(
             self.session,
             SvgVersion,
@@ -56,6 +107,14 @@ class SvgGenerationService:
         async with locker.acquire() as lock:
             version = lock.record
             assert version is not None
+
+            if is_recovery:
+                logger.warning(
+                    "Recovering SVG task",
+                    version_id=version.id,
+                    status=version.status.value,
+                    has_file_ref=version.file_ref is not None,
+                )
 
             if version.file_ref is not None:
                 logger.warning("SvgVersion already has file_ref", version_id=version.id)
@@ -88,7 +147,6 @@ class SvgGenerationService:
                     status=SvgProcessingStatus.PROCESSING,
                     started_at=datetime.now(UTC),
                 )
-                current_status = SvgProcessingStatus.PROCESSING
 
         # === OUTSIDE LOCK: Load related objects ===
         image = await self.session.get(Image, image_id)
@@ -107,23 +165,9 @@ class SvgGenerationService:
         if not order:
             raise ValueError(f"Order {line_item.order_id} not found")
 
-        assert order.id is not None
-        assert image.id is not None
-
-        mercure = ImageStatusContext(
-            service=self.mercure_service,
-            bg_tasks=self.bg_tasks,
-            order_id=order.id,
-            image_id=image.id,
-            version_id=svg_version_id,
-            status_type=VersionType.SVG,
-        )
-
         # Use the coloring_version we loaded (linked by coloring_version_id)
         if not coloring_version.file_ref:
             raise FileNotFoundError("Coloring version has no file in S3")
-
-        mercure.publish(current_status)
 
         # === OUTSIDE LOCK: Download coloring ===
         image_data = await self.storage.download(coloring_version.file_ref)
@@ -138,8 +182,6 @@ class SvgGenerationService:
             except UnexpectedStatusError as e:
                 logger.error("Cannot start vectorization", version_id=svg_version_id, actual=e.actual.value)
                 return
-
-        mercure.publish(SvgProcessingStatus.VECTORIZER_PROCESSING)
 
         # === OUTSIDE LOCK: Vectorize (long-running) ===
         svg_data = await self.vectorizer.vectorize(
@@ -160,8 +202,6 @@ class SvgGenerationService:
                 logger.error("Cannot mark VECTORIZER_COMPLETED", version_id=svg_version_id, actual=e.actual.value)
                 return
 
-        mercure.publish(SvgProcessingStatus.VECTORIZER_COMPLETED)
-
         # === LOCK 4: Mark STORAGE_UPLOAD ===
         async with locker.acquire() as lock:
             try:
@@ -172,8 +212,6 @@ class SvgGenerationService:
             except UnexpectedStatusError as e:
                 logger.error("Cannot start upload", version_id=svg_version_id, actual=e.actual.value)
                 return
-
-        mercure.publish(SvgProcessingStatus.STORAGE_UPLOAD)
 
         # === OUTSIDE LOCK: Upload to S3 ===
         # Reload version to get the version object for path generation
@@ -202,14 +240,16 @@ class SvgGenerationService:
                 logger.error("Cannot mark COMPLETED", version_id=svg_version_id, actual=e.actual.value)
                 return
 
+            # Auto-select this SVG version
             image.selected_svg_id = svg_version_id
-
-        mercure.publish(SvgProcessingStatus.COMPLETED)
 
         logger.info("SVG generation completed", version_id=svg_version_id, s3_key=output_key)
 
-    async def mark_error(self, svg_version_id: int) -> None:
-        """Mark version as ERROR."""
+    async def _mark_error(self, svg_version_id: int) -> None:
+        """Mark version as ERROR (internal - called on exception).
+
+        Context must already be set by caller (process method).
+        """
         locker = ProcessingLock(
             self.session,
             SvgVersion,

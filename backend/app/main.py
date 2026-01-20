@@ -10,7 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import events, health, orders, webhooks
 from app.config import settings
 from app.db import dispose_engine
+from app.logging import setup_logging
 from app.services.storage.storage_service import S3StorageService
+
+# Configure logging before anything else
+setup_logging()
 
 logger = structlog.get_logger(__name__)
 

@@ -1,10 +1,22 @@
 """Dramatiq background tasks package."""
 
 import dramatiq
+import redis
+import structlog
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.middleware import Middleware
 
 from app.config import settings
+from app.logging import setup_logging
+
+# Configure logging before anything else
+setup_logging()
+
+logger = structlog.get_logger(__name__)
+
+# Recovery lock settings
+RECOVERY_LOCK_KEY = "dramatiq:recovery:lock"
+RECOVERY_LOCK_TTL = 60  # seconds
 
 
 class TaskRecoveryMiddleware(Middleware):
@@ -13,15 +25,31 @@ class TaskRecoveryMiddleware(Middleware):
     _recovered = False
 
     def before_worker_boot(self, broker: dramatiq.Broker, worker: dramatiq.Worker) -> None:
-        """Run task recovery once when worker starts."""
+        """Run task recovery once when worker starts.
+
+        Uses a Redis lock to ensure only one worker across all processes
+        runs recovery at a time.
+        """
         # Only run recovery once per process
         if TaskRecoveryMiddleware._recovered:
             return
         TaskRecoveryMiddleware._recovered = True
 
-        from app.tasks.recovery import recover_stuck_tasks
+        # Try to acquire distributed lock via Redis
+        r = redis.from_url(settings.redis_url)  # type: ignore[no-untyped-call]
+        lock_acquired = r.set(RECOVERY_LOCK_KEY, "1", nx=True, ex=RECOVERY_LOCK_TTL)
 
-        recover_stuck_tasks()
+        if not lock_acquired:
+            logger.debug("Recovery lock held by another worker, skipping")
+            return
+
+        try:
+            from app.tasks.recovery import recover_stuck_tasks
+
+            recover_stuck_tasks()
+        finally:
+            # Release lock when done
+            r.delete(RECOVERY_LOCK_KEY)
 
 
 # Configure Redis broker

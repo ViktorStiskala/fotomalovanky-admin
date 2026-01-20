@@ -221,16 +221,31 @@ class VectorizerService:
         return (result.scalar() or 0) + 1
 
     @staticmethod
-    async def get_incomplete_versions(session: AsyncSession) -> list[int]:
-        """Get IDs of SVG versions stuck in intermediate states.
+    async def get_incomplete_versions(session: AsyncSession) -> list[dict[str, int | str]]:
+        """Get SVG versions stuck in intermediate states with context for recovery.
 
         Used by task recovery to find tasks that were interrupted.
         Excludes versions that already have file_ref (completed but status not updated).
+
+        Returns:
+            List of dicts with version_id, order_id, and image_id for each stuck version.
         """
-        result = await session.execute(
-            select(SvgVersion.id).where(
+        statement = (
+            select(
+                SvgVersion.id.label("version_id"),  # type: ignore[union-attr]
+                Order.id.label("order_id"),  # type: ignore[attr-defined]
+                Image.id.label("image_id"),  # type: ignore[union-attr]
+            )
+            .join(Image, SvgVersion.image_id == Image.id)  # type: ignore[arg-type]
+            .join(LineItem, Image.line_item_id == LineItem.id)  # type: ignore[arg-type]
+            .join(Order, LineItem.order_id == Order.id)  # type: ignore[arg-type]
+            .where(
                 SvgVersion.status.in_(SvgProcessingStatus.intermediate_states()),  # type: ignore[attr-defined]
-                SvgVersion.file_ref == None,  # noqa: E711 - SQLAlchemy None check
+                SvgVersion.file_ref.is_(None),  # type: ignore[union-attr]
             )
         )
-        return [row[0] for row in result.fetchall()]
+        result = await session.execute(statement)
+        return [
+            {"version_id": row.version_id, "order_id": row.order_id, "image_id": row.image_id}
+            for row in result.fetchall()
+        ]

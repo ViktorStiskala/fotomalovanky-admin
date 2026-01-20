@@ -12,6 +12,7 @@ from app.config import settings
 from app.db import async_session_maker
 from app.models.enums import OrderStatus
 from app.models.order import Order
+from app.services.mercure.events import ListUpdateEvent
 from app.services.mercure.publish_service import MercurePublishService
 from app.tasks.orders.order_ingestion import ingest_order
 
@@ -95,9 +96,9 @@ async def save_or_get_order(payload: dict[str, object], session: AsyncSession) -
 
     logger.info("Created new order", shopify_id=shopify_id, order_id=order.id)
 
-    # Notify frontend about new order via Mercure
+    # Notify frontend about new order via Mercure (full refresh)
     mercure = MercurePublishService()
-    await mercure.publish_order_list_update()
+    await mercure.publish(ListUpdateEvent(order_ids=[]))
 
     return order
 

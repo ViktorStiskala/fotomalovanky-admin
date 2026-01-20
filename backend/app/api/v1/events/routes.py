@@ -1,15 +1,15 @@
-"""Events API routes."""
+"""Events API routes - exposes event schema for frontend type generation."""
 
 from fastapi import APIRouter
 
-from app.models.events import MercureEvent
+from app.services.mercure.events import MercureEventUnion
 
 router = APIRouter(tags=["events"])
 
 
 @router.get(
     "/events/schema",
-    response_model=MercureEvent,
+    response_model=MercureEventUnion,
     operation_id="getMercureEventSchema",
     include_in_schema=True,
     summary="Mercure event schema (for documentation only)",

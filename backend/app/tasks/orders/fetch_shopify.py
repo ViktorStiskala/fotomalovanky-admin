@@ -5,7 +5,6 @@ import asyncio
 import dramatiq
 import structlog
 
-from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.shopify_sync_service import ShopifySyncService
 from app.tasks.orders.order_ingestion import ingest_order
 from app.tasks.utils.task_db import task_db_session
@@ -20,7 +19,7 @@ def fetch_orders_from_shopify(limit: int = 20) -> None:
     This task:
     1. Calls ShopifySyncService to fetch and sync orders
     2. Dispatches ingest_order tasks for new/updated orders
-    3. Publishes Mercure update when orders are imported/updated
+    3. ListUpdateEvent is auto-published when Orders are created via TrackedAsyncSession
 
     Args:
         limit: Maximum number of orders to fetch from Shopify
@@ -30,8 +29,6 @@ def fetch_orders_from_shopify(limit: int = 20) -> None:
 
 async def _fetch_orders_async(limit: int) -> None:
     """Async implementation of fetch_orders_from_shopify."""
-    mercure = MercurePublishService()
-
     async with task_db_session() as session:
         service = ShopifySyncService(session)
         result, orders_to_ingest = await service.sync_orders_batch(limit=limit)
@@ -41,9 +38,8 @@ async def _fetch_orders_async(limit: int) -> None:
             assert order.id is not None
             ingest_order.send(order.id)
 
-    # Notify frontend about new orders if any were imported or updated
-    if result.has_changes:
-        await mercure.publish_order_list_update()
+    # ListUpdateEvent is auto-published by TrackedAsyncSession when Orders are created
+    # (via BatchMercureEvent.trigger_models mechanism)
 
     logger.info(
         "Completed Shopify order fetch",

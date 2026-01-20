@@ -15,6 +15,7 @@ from app.api.v1.orders.schemas import (
     GenerateColoringResponse,
     SvgVersionResponse,
 )
+from app.models.coloring import ColoringVersion
 from app.models.enums import VersionType
 from app.services.coloring.exceptions import (
     ColoringVersionNotFound,
@@ -22,6 +23,7 @@ from app.services.coloring.exceptions import (
     SvgVersionNotFound,
     VersionNotInErrorState,
 )
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import (
     ImageNotDownloaded,
     ImageNotFound,
@@ -55,9 +57,12 @@ async def generate_order_coloring(
             steps=req.steps,
         )
 
-        # Dispatch tasks after DB commit
+        # Dispatch tasks after DB commit with context for Mercure auto-tracking
         for version_id in version_ids:
-            generate_coloring.send(version_id)
+            # Get image_id from the version
+            version = await service.session.get(ColoringVersion, version_id)
+            if version:
+                generate_coloring.send(version_id, order_id=order_id, image_id=version.image_id)
 
         return GenerateColoringResponse(
             queued=len(version_ids),
@@ -92,13 +97,16 @@ async def generate_image_coloring(
             steps=req.steps,
         )
 
-        # Dispatch task after DB commit
-        assert coloring_version.id is not None
-        generate_coloring.send(coloring_version.id)
-
-        # Get image to emit Mercure event
+        # Get image to find order_id for task dispatch and Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.line_item.order.id, image_id)
+        order_id = image.line_item.order.id
+
+        # Dispatch task after DB commit with context for Mercure auto-tracking
+        assert coloring_version.id is not None
+        generate_coloring.send(coloring_version.id, order_id=order_id, image_id=image_id)
+
+        # Notify frontend about new queued version
+        await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 
         return ColoringVersionResponse.from_model(coloring_version)
     except ImageNotFound:
@@ -126,17 +134,20 @@ async def retry_version(
 ) -> ColoringVersionResponse | SvgVersionResponse:
     """Retry a failed version generation with the same settings."""
     try:
+        # Get image first to find order_id for task dispatch
+        image = await image_service.get_image(image_id)
+        order_id = image.line_item.order.id
+
         if version_type == VersionType.COLORING:
             coloring_version = await coloring_service.prepare_retry(version_id)
             # Verify ownership
             if coloring_version.image_id != image_id:
                 raise HTTPException(status_code=400, detail="Version does not belong to this image")
             assert coloring_version.id is not None
-            generate_coloring.send(coloring_version.id)
+            generate_coloring.send(coloring_version.id, order_id=order_id, image_id=image_id)
 
-            # Get image for Mercure event
-            image = await image_service.get_image(image_id)
-            await mercure.publish_image_update(image.line_item.order.id, image_id)
+            # Notify frontend about retry
+            await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 
             return ColoringVersionResponse.from_model(coloring_version)
         else:  # VersionType.SVG
@@ -145,11 +156,10 @@ async def retry_version(
             if svg_version.image_id != image_id:
                 raise HTTPException(status_code=400, detail="Version does not belong to this image")
             assert svg_version.id is not None
-            generate_svg.send(svg_version.id)
+            generate_svg.send(svg_version.id, order_id=order_id, image_id=image_id)
 
-            # Get image for Mercure event
-            image = await image_service.get_image(image_id)
-            await mercure.publish_image_update(image.line_item.order.id, image_id)
+            # Notify frontend about retry
+            await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 
             return SvgVersionResponse.from_model(svg_version)
     except (ColoringVersionNotFound, SvgVersionNotFound):

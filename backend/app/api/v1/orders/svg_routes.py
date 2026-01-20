@@ -13,10 +13,12 @@ from app.api.v1.orders.schemas import (
     GenerateSvgResponse,
     SvgVersionResponse,
 )
+from app.models.coloring import SvgVersion
 from app.services.coloring.exceptions import (
     NoColoringAvailable,
     NoImagesToProcess,
 )
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import ImageNotFound, OrderNotFound
 from app.tasks.coloring.vectorize_image import generate_svg
 
@@ -41,9 +43,12 @@ async def generate_order_svg(
             group_by=req.group_by,
         )
 
-        # Dispatch tasks after DB commit
+        # Dispatch tasks after DB commit with context for Mercure auto-tracking
         for version_id in version_ids:
-            generate_svg.send(version_id)
+            # Get image_id from the version
+            version = await service.session.get(SvgVersion, version_id)
+            if version:
+                generate_svg.send(version_id, order_id=order_id, image_id=version.image_id)
 
         return GenerateSvgResponse(
             queued=len(version_ids),
@@ -76,13 +81,16 @@ async def generate_image_svg(
             group_by=req.group_by,
         )
 
-        # Dispatch task after DB commit
-        assert svg_version.id is not None
-        generate_svg.send(svg_version.id)
-
-        # Get image to emit Mercure event
+        # Get image to find order_id for task dispatch and Mercure event
         image = await image_service.get_image(image_id)
-        await mercure.publish_image_update(image.line_item.order.id, image_id)
+        order_id = image.line_item.order.id
+
+        # Dispatch task after DB commit with context for Mercure auto-tracking
+        assert svg_version.id is not None
+        generate_svg.send(svg_version.id, order_id=order_id, image_id=image_id)
+
+        # Notify frontend about new queued version
+        await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 
         return SvgVersionResponse.from_model(svg_version)
     except ImageNotFound:

@@ -35,7 +35,7 @@ export function getShopifyOrderUrl(shopifyId: number): string {
 }
 
 // =============================================================================
-// Re-export Generated Types (for backward compatibility)
+// Re-export Generated Types with cleaner names
 // =============================================================================
 
 export type {

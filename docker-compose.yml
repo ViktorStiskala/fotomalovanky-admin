@@ -42,6 +42,11 @@ services:
       SERVER_NAME: ":3000"
       MERCURE_PUBLISHER_JWT_KEY: ${MERCURE_PUBLISHER_JWT_KEY:-change-me-publisher-secret-key}
       MERCURE_SUBSCRIBER_JWT_KEY: ${MERCURE_SUBSCRIBER_JWT_KEY:-change-me-subscriber-secret-key}
+      # Console log format instead of JSON
+      GLOBAL_OPTIONS: |
+        log {
+          format console
+        }
       # Allow anonymous subscribers (for development)
       MERCURE_EXTRA_DIRECTIVES: |
         anonymous

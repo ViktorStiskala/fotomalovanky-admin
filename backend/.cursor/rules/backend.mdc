@@ -31,12 +31,16 @@ app/services/
 ├── coloring/                  # Domain: image processing
 │   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
 │   ├── coloring_service.py
+│   ├── coloring_generation_service.py  # RunPod processing (uses @mercure_autotrack)
+│   ├── svg_generation_service.py       # Vectorizer.ai processing (uses @mercure_autotrack)
 │   └── vectorizer_service.py
+├── mercure/                   # Mercure SSE event publishing
+│   ├── events.py              # Event classes (OrderUpdateEvent, ImageUpdateEvent, etc.)
+│   └── publish_service.py     # MercurePublishService
 ├── storage/                   # S3 storage abstraction
 │   ├── storage_service.py     # S3StorageService
 │   └── paths.py               # OrderStoragePaths key generation
 └── external/                  # Third-party API clients (all classes)
-    ├── mercure.py             # MercureService
     ├── runpod.py              # RunPodService
     ├── shopify.py             # ShopifyService
     └── vectorizer.py          # VectorizerApiService
@@ -210,27 +214,56 @@ This handles:
 ## Dramatiq Tasks Architecture (MANDATORY)
 
 Tasks MUST be thin wrappers that:
-1. Set up database session via `task_db_session()`
+1. Set up database session via `task_db_session(bg_tasks=...)`
 2. Call service methods for ALL business logic
 3. Handle task-specific concerns (retries, timeouts)
-4. Publish Mercure notifications for status updates
+4. Pass context (order_id, image_id) for Mercure auto-tracking
 
 **NEVER** put business logic in tasks. If new logic is needed, add a service method first.
 
-### Task Pattern
+### Task Pattern (with Mercure Auto-Tracking)
 
 ```python
-from app.tasks.utils import task_db_session
+from app.tasks.utils.task_db import task_db_session
 from app.tasks.decorators import task_recover
+from app.tasks.utils.background_tasks import BackgroundTasks, background_tasks
 
 @task_recover(ColoringService.get_incomplete_versions)
 @dramatiq.actor(max_retries=3, min_backoff=1000, max_backoff=60000)
-def generate_coloring(version_id: int) -> None:
-    async def _run():
-        async with task_db_session() as session:
-            service = ColoringService(session)
-            await service.process_version(version_id)
-    asyncio.run(_run())
+def generate_coloring(
+    coloring_version_id: int,
+    *,
+    order_id: str,      # Required for Mercure context
+    image_id: int,      # Required for Mercure context
+    is_recovery: bool = False,
+) -> None:
+    asyncio.run(
+        _generate_coloring_async(
+            coloring_version_id,
+            order_id=order_id,
+            image_id=image_id,
+            is_recovery=is_recovery,
+        )  # type: ignore[call-arg]
+    )
+
+@background_tasks(timeout=30)
+async def _generate_coloring_async(
+    coloring_version_id: int,
+    *,
+    order_id: str,
+    image_id: int,
+    is_recovery: bool = False,
+    bg_tasks: BackgroundTasks,  # Injected by @background_tasks decorator
+) -> None:
+    async with task_db_session(bg_tasks=bg_tasks) as session:
+        service = ColoringGenerationService(session=session, ...)
+        # Service handles Mercure context and auto-publishing
+        await service.process(
+            coloring_version_id,
+            order_id=order_id,
+            image_id=image_id,
+            is_recovery=is_recovery,
+        )
 ```
 
 ### External API Calls
@@ -279,15 +312,16 @@ from app.services import ColoringService
 # GOOD - explicit imports from actual modules
 from app.services.coloring.coloring_service import ColoringService
 from app.utils.shopify_helpers import build_customer_name
-from app.services.external.mercure import MercureService
+from app.services.mercure.publish_service import MercurePublishService
 from app.services.storage.storage_service import S3StorageService
 
-# Using external services (always instantiate as classes)
-mercure = MercureService()
-await mercure.publish_order_update(order_id)  # order_id is ULID string
-
+# Storage service usage
 storage = S3StorageService()
 file_ref = await storage.upload(upload_to=key, data=data, content_type="image/png")
+
+# Mercure (prefer auto-tracking, use legacy methods only during migration)
+mercure = MercurePublishService()
+await mercure.publish_order_update(order_id)  # DEPRECATED - prefer auto-tracking
 ```
 
 ## Custom Exceptions (MANDATORY)
@@ -413,24 +447,90 @@ select(Order).options(
 )
 ```
 
-## Mercure Event Schemas (MANDATORY)
+## Mercure Auto-Tracking (MANDATORY)
 
-Mercure events MUST use typed Pydantic models defined in `app/models/events.py`:
+Mercure events are automatically published via `TrackedAsyncSession` when tracked model fields change.
 
-- **NEVER** construct event JSON manually
-- **ALWAYS** use `event.model_dump_json()` for serialization
-- Event types: `OrderUpdateEvent`, `ListUpdateEvent`, `ImageUpdateEvent`, `ImageStatusEvent`
-- All events use `order_id` (ULID string), not `shopify_id`
+### Event Types (in `app/services/mercure/events.py`)
+
+- `OrderUpdateEvent`: Triggered when `Order.status` changes
+- `ImageUpdateEvent`: Triggered when `ColoringVersion.status`, `SvgVersion.status`, or `Image.selected_*_id` changes
+- `ListUpdateEvent`: Batched event that collects `OrderUpdateEvent`s and emits when Orders are created/deleted
+
+### Services with Tracked Field Changes
+
+Services that modify tracked fields MUST:
+1. Use `@mercure_autotrack(EventClass)` decorator
+2. Have `session: TrackedAsyncSession` attribute
+3. Call `session.set_mercure_context(...)` at start of public methods
+4. Handle errors internally via private `_mark_error()` methods
 
 ```python
-from app.models.events import OrderUpdateEvent
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
+from app.models.order import Order, Image
+from app.services.mercure.events import ImageUpdateEvent
 
-event = OrderUpdateEvent(type="order_update", order_id=order_id)  # order_id is ULID string
-await self._publish(topics=[...], data=event.model_dump_json())
+@mercure_autotrack(ImageUpdateEvent)
+class MyProcessingService:
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+    
+    def __init__(self, session: TrackedAsyncSession, ...):
+        self.session = session
+    
+    async def process(self, version_id: int, *, order_id: str, image_id: int):
+        # MUST be first line - sets context for Mercure event publishing
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
+        
+        # ... tracked field changes (e.g., version.status = ...) 
+        # ... auto-publish ImageUpdateEvent after commit
 ```
+
+### Tasks with Order Status Changes
+
+Tasks that directly modify `Order.status` MUST:
+1. Call `session.track_changes(Order.status)` at start
+2. Call `session.set_mercure_context(Order.id == order_id)` at start
+
+```python
+async with task_db_session() as session:
+    # Enable auto-tracking for Order.status changes
+    session.track_changes(Order.status)  # type: ignore[arg-type]
+    session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
+    
+    order.status = OrderStatus.PROCESSING  # Auto-published after commit
+    await session.commit()
+```
+
+### Task Context Requirements
+
+Tasks dispatching to services with `@mercure_autotrack` MUST pass:
+- `order_id: str` - Order ULID
+- `image_id: int` - Image ID
+
+```python
+generate_coloring.send(version_id, order_id=order_id, image_id=image_id)
+```
+
+### Event Schema Exposure
 
 The event schemas are exposed via `/api/v1/events/schema` endpoint for OpenAPI generation,
 enabling type-safe frontend event handling through the generated SDK.
+
+### API Routes (Manual Publishing)
+
+API routes use regular `AsyncSession`, not `TrackedAsyncSession`. For API routes that need
+to notify the frontend (e.g., version selection, queuing generation), publish events directly:
+
+```python
+from app.services.mercure.events import ImageUpdateEvent, ListUpdateEvent
+from app.services.mercure.publish_service import MercurePublishService
+
+# In API route
+mercure = MercurePublishService()
+await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
+await mercure.publish(ListUpdateEvent(order_ids=[]))  # Full refresh
+```
 
 ## Testing Considerations
 

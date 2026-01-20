@@ -10,7 +10,6 @@ from sqlmodel import select
 from app.models.enums import OrderStatus
 from app.models.order import LineItem, Order
 from app.services.download.download_service import DownloadService
-from app.services.mercure.publish_service import MercurePublishService
 from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.decorators import task_recover
@@ -28,7 +27,7 @@ def download_order_images(order_id: str) -> None:
     1. Sets order status to DOWNLOADING
     2. Uses ShopifyImageDownloadService to download all images
     3. Sets order status to READY_FOR_REVIEW (or ERROR if any failed)
-    4. Publishes Mercure updates at each stage
+    4. Mercure events are auto-published via TrackedAsyncSession
 
     The task has two layers of retry:
     - Per-image retries via tenacity in DownloadService (handles transient failures)
@@ -39,7 +38,6 @@ def download_order_images(order_id: str) -> None:
 
 async def _download_order_images_async(order_id: str) -> None:
     """Async implementation of image downloading."""
-    mercure = MercurePublishService()
     storage = S3StorageService()
 
     logger.info("Starting image download task", order_id=order_id)
@@ -58,13 +56,16 @@ async def _download_order_images_async(order_id: str) -> None:
             logger.error("Order not found", order_id=order_id)
             return
 
+        # Enable auto-tracking for Order.status changes
+        session.track_changes(Order.status)  # type: ignore[arg-type]
+        session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
+
         logger.info("Downloading images for order", order_id=order_id, order_number=order.order_number)
 
         try:
-            # Update status to DOWNLOADING
+            # Update status to DOWNLOADING (auto-published via TrackedAsyncSession)
             order.status = OrderStatus.DOWNLOADING
             await session.commit()
-            await mercure.publish_order_update(order_id)
 
             # Use DownloadService with async context manager
             async with DownloadService() as download_svc:
@@ -74,7 +75,7 @@ async def _download_order_images_async(order_id: str) -> None:
             # Commit image updates from service
             await session.commit()
 
-            # Update order status based on results
+            # Update order status based on results (auto-published)
             if download_result.total == 0:
                 order.status = OrderStatus.READY_FOR_REVIEW
             elif download_result.has_failures:
@@ -83,7 +84,6 @@ async def _download_order_images_async(order_id: str) -> None:
                 order.status = OrderStatus.READY_FOR_REVIEW
 
             await session.commit()
-            await mercure.publish_order_update(order_id)
 
             logger.info(
                 "Image download task complete",
@@ -98,5 +98,4 @@ async def _download_order_images_async(order_id: str) -> None:
             logger.error("Image download task failed", order_id=order_id, error=str(e))
             order.status = OrderStatus.ERROR
             await session.commit()
-            await mercure.publish_order_update(order_id)
             raise

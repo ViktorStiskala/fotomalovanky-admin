@@ -21,6 +21,9 @@ async def _recover_stuck_tasks() -> int:
     Uses the @task_recover decorator registry to discover tasks
     and their associated recovery functions.
 
+    The recovery functions return dicts with version_id, order_id, and image_id
+    which are passed to the task for proper Mercure context.
+
     Returns:
         Total number of recovered tasks.
     """
@@ -29,15 +32,23 @@ async def _recover_stuck_tasks() -> int:
     async with async_session_maker() as session:
         for task_fn, get_incomplete_fn in get_recoverable_tasks():
             try:
-                version_ids = await get_incomplete_fn(session)
-                for version_id in version_ids:
+                # get_incomplete_fn returns list of dicts with version_id, order_id, image_id
+                items = await get_incomplete_fn(session)
+                for item in items:
                     logger.info(
                         "Recovering stuck task",
                         task=task_fn.actor_name,
-                        version_id=version_id,
+                        version_id=item["version_id"],
+                        order_id=item["order_id"],
+                        image_id=item["image_id"],
                     )
-                    # Pass is_recovery=True so service knows to accept intermediate states
-                    task_fn.send(version_id, is_recovery=True)
+                    # Pass context for Mercure auto-tracking
+                    task_fn.send(
+                        item["version_id"],
+                        order_id=item["order_id"],
+                        image_id=item["image_id"],
+                        is_recovery=True,
+                    )
                     total_recovered += 1
             except Exception as e:
                 logger.error(
