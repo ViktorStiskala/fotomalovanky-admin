@@ -740,7 +740,7 @@ async def prepare_retry(self, version_id: int, *, order_id: str, image_id: int):
   - `lock.update_record(status=NewStatus)` - for simple updates
   - `lock.verify_and_update_status(expected, new_status)` - for validated transitions
 - Commit AFTER the lock context exits: `await self.session.commit()`
-- RecordLock raises `DirectModificationError` if you attempt direct modification inside the lock
+- Always use lock helper methods to modify records (do not modify `lock.record` directly)
 
 ## Testing Considerations
 
