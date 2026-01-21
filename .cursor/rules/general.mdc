@@ -3,6 +3,17 @@ alwaysApply: true
 ---
 # HARD CONSTRAINTS (MUST FOLLOW)
 
+## File Referencing & Plan Rules
+
+When creating plans, listing files, or referencing code:
+
+1.  **NO Markdown Links:** Do not use the `[filename](path)` syntax.
+2.  **Use Plain Relative Paths:** Output the plain text path. Cursor will automatically render these as clickable "File Chips" if the path is correct.
+3.  **Monorepo Prefixes Required:** Since this is a monorepo, you must strictly start paths with the top-level directory:
+    *   Use `frontend/...` for Frontend files.
+    *   Use `backend/...` for Backend files.
+    *   Do NOT use `./src/...` or relative paths that assume a specific subdirectory context.
+
 ## Package Management & Tooling
 
 ### Backend (Python)

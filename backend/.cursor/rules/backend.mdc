@@ -211,6 +211,37 @@ This handles:
 3. Retries on unique constraint violation
 4. Rolls back to savepoint and recalculates on conflict
 
+## RedisLock (Distributed Locking)
+
+Use `RedisLock` for distributed locking across workers:
+
+```python
+from app.utils.redis_lock import RedisLock
+```
+
+### Context Manager (Mutex with Auto-Release)
+
+For exclusive access where you need automatic cleanup:
+
+```python
+with RedisLock("my-lock", ttl=60) as lock:
+    if not lock.acquired:
+        logger.debug("Lock unavailable, skipping")
+        return
+    do_exclusive_work()  # Lock auto-released on exit
+```
+
+### One-Shot (Deduplication)
+
+For deduplication where TTL handles expiration:
+
+```python
+if RedisLock("task:123", ttl=300).try_acquire_lock():
+    dispatch_task()  # Lock NOT released, expires after TTL
+```
+
+**NEVER** use `try_acquire_lock()` when you need cleanup - use context manager instead.
+
 ## Dramatiq Tasks Architecture (MANDATORY)
 
 Tasks MUST be thin wrappers that:
@@ -225,7 +256,7 @@ Tasks MUST be thin wrappers that:
 
 ```python
 from app.tasks.utils.task_db import task_db_session
-from app.tasks.decorators import task_recover
+from app.tasks.utils.decorators import task_recover
 from app.tasks.utils.background_tasks import BackgroundTasks, background_tasks
 
 @task_recover(ColoringService.get_incomplete_versions)
@@ -279,19 +310,39 @@ Tasks are organized to mirror the services structure:
 
 ```
 app/tasks/
-├── __init__.py
-├── decorators.py        # @task_recover decorator
-├── recovery.py          # Task recovery utilities
-├── utils.py             # task_db_session context manager
-├── orders/              # mirrors services/orders/
+├── __init__.py              # Imports broker and registers all tasks
+├── broker.py                # Redis broker configuration
+├── utils/
+│   ├── __init__.py          # Empty (docstring only)
+│   ├── decorators.py        # @task_recover decorator
+│   ├── recovery.py          # run_recovery task + recovery utilities
+│   ├── task_db.py           # task_db_session context manager
+│   ├── background_tasks.py  # @background_tasks decorator
+│   └── processing_lock.py   # RecordLock, ProcessingLock
+├── orders/                  # mirrors services/orders/
 │   ├── __init__.py
-│   ├── fetch_shopify.py       # Batch fetch orders
-│   ├── image_download.py      # Download/upload order images to S3
-│   └── order_ingestion.py     # Ingest single order
-└── coloring/            # mirrors services/coloring/
+│   ├── fetch_shopify.py
+│   ├── image_download.py
+│   └── order_ingestion.py
+└── coloring/                # mirrors services/coloring/
     ├── __init__.py
-    ├── generate_coloring.py   # Generate coloring via RunPod
-    └── vectorize_image.py     # Convert to SVG via Vectorizer.ai
+    ├── generate_coloring.py
+    └── vectorize_image.py
+```
+
+### Running Dramatiq Workers
+
+Use the `uv run dramatiq-worker` script which handles recovery dispatch:
+
+```bash
+# Run with defaults
+uv run dramatiq-worker
+
+# Run with options (passed to dramatiq CLI)
+uv run dramatiq-worker --processes 4 --threads 8
+
+# Development with auto-reload
+uv run dramatiq-worker --watch app
 ```
 
 ## Import Rules (MANDATORY)

@@ -12,7 +12,7 @@ from app.models.order import LineItem, Order
 from app.services.download.download_service import DownloadService
 from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
-from app.tasks.decorators import task_recover
+from app.tasks.utils.decorators import task_recover
 from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)

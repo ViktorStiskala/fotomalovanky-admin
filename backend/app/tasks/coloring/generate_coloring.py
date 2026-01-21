@@ -9,8 +9,8 @@ from app.services.coloring.coloring_generation_service import ColoringGeneration
 from app.services.coloring.coloring_service import ColoringService
 from app.services.external.runpod import RunPodService
 from app.services.storage.storage_service import S3StorageService
-from app.tasks.decorators import task_recover
 from app.tasks.utils.background_tasks import BackgroundTasks, background_tasks
+from app.tasks.utils.decorators import task_recover
 from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)

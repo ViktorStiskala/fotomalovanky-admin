@@ -8,8 +8,8 @@ import structlog
 from app.models.enums import OrderStatus
 from app.models.order import Order
 from app.services.orders.shopify_sync_service import ShopifySyncService
-from app.tasks.decorators import task_recover
 from app.tasks.orders.image_download import download_order_images
+from app.tasks.utils.decorators import task_recover
 from app.tasks.utils.task_db import task_db_session
 
 logger = structlog.get_logger(__name__)

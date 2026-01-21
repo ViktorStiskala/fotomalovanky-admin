@@ -83,6 +83,7 @@ addopts = "-v"
 
 [project.scripts]
 codegen = "app.scripts.codegen:main"
+dramatiq-worker = "app.scripts.dramatiq_worker:main"
 
 [build-system]
 requires = ["hatchling"]
