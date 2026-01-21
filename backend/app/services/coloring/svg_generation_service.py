@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import structlog
 
 from app.db.mercure_protocol import mercure_autotrack
+from app.db.processing_lock import ProcessingLock, RecordLockedError, RecordNotFoundError
 from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import SvgProcessingStatus
@@ -25,7 +26,6 @@ from app.services.external.vectorizer import (
 from app.services.mercure.events import ImageUpdateEvent
 from app.services.storage.paths import OrderStoragePaths
 from app.services.storage.storage_service import S3StorageService
-from app.tasks.utils.processing_lock import ProcessingLock, RecordLockedError, RecordNotFoundError
 
 logger = structlog.get_logger(__name__)
 

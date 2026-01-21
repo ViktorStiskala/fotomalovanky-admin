@@ -62,7 +62,7 @@ strict = true
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
-exclude = ["app/services/external/shopify_client/"]
+exclude = ["app/services/external/shopify_client/", "migrations/"]
 
 [[tool.mypy.overrides]]
 module = "dramatiq.*"

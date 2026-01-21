@@ -44,8 +44,12 @@ def fetch_orders_from_shopify(limit: int = 20) -> None:
 async def _fetch_orders_async(limit: int) -> None:
     """Async implementation of fetch_orders_from_shopify."""
     async with task_db_session() as session:
-        service = ShopifySyncService(session)
-        result, orders_needing_download = await service.sync_orders_batch(limit=limit)
+        # Defer batch events until all orders are processed
+        # This batches multiple OrderUpdateEvents into a single ListUpdateEvent
+        async with session.deferred_batch_events():
+            service = ShopifySyncService(session)
+            result, orders_needing_download = await service.sync_orders_batch(limit=limit)
+        # Single batched ListUpdateEvent published here
 
         # Dispatch download tasks for orders with images
         for order_id in orders_needing_download:

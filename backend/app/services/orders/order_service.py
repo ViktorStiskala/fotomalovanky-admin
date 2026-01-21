@@ -15,13 +15,13 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
 from app.db.mercure_protocol import mercure_autotrack
+from app.db.processing_lock import RecordLock, RecordNotFoundError
 from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
 from app.services.mercure.events import OrderUpdateEvent
 from app.services.orders.exceptions import OrderNotFound
-from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
 from app.utils.shopify_helpers import build_customer_name
 
 if TYPE_CHECKING:

@@ -317,8 +317,7 @@ app/tasks/
 │   ├── decorators.py        # @task_recover decorator
 │   ├── recovery.py          # run_recovery task + recovery utilities
 │   ├── task_db.py           # task_db_session context manager
-│   ├── background_tasks.py  # @background_tasks decorator
-│   └── processing_lock.py   # RecordLock, ProcessingLock
+│   └── background_tasks.py  # @background_tasks decorator
 ├── orders/                  # mirrors services/orders/
 │   ├── __init__.py
 │   ├── fetch_shopify_order.py # Batch fetch + single order ingestion
@@ -682,10 +681,10 @@ app/services/
 
 ## RecordLock for Status Transitions (MANDATORY)
 
-Status transition methods that may race with background tasks MUST use `RecordLock`:
+Status transition methods that may race with background tasks MUST use `RecordLock` (located in `app/db/processing_lock.py`):
 
 ```python
-from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
+from app.db.processing_lock import RecordLock, RecordNotFoundError
 from app.services.exceptions import UnexpectedStatusError
 
 async def prepare_retry(self, version_id: int, *, order_id: str, image_id: int):
