@@ -96,7 +96,7 @@ def mercure_autotrack(
                     cls=cls.__name__,
                     fields=[f"{f.class_.__name__}.{f.key}" for f in all_trigger_fields],
                 )
-                self.session.track_changes(*all_trigger_fields)
+                self.session._track_changes(*all_trigger_fields)
                 # Tell session what context is required for these events
                 self.session._set_required_context(required_field_names)
 

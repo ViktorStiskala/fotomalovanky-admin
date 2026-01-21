@@ -10,6 +10,7 @@ from sqlmodel import select
 from app.models.enums import OrderStatus
 from app.models.order import LineItem, Order
 from app.services.download.download_service import DownloadService
+from app.services.orders.order_service import OrderService
 from app.services.orders.shopify_image_download_service import ShopifyImageDownloadService
 from app.services.storage.storage_service import S3StorageService
 from app.tasks.utils.decorators import task_recover
@@ -43,6 +44,8 @@ async def _download_order_images_async(order_id: str) -> None:
     logger.info("Starting image download task", order_id=order_id)
 
     async with task_db_session() as session:
+        order_service = OrderService(session)
+
         # Get order from database with line items and images
         statement = (
             select(Order)
@@ -56,16 +59,11 @@ async def _download_order_images_async(order_id: str) -> None:
             logger.error("Order not found", order_id=order_id)
             return
 
-        # Enable auto-tracking for Order.status changes
-        session.track_changes(Order.status)  # type: ignore[arg-type]
-        session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
-
         logger.info("Downloading images for order", order_id=order_id, order_number=order.order_number)
 
         try:
-            # Update status to DOWNLOADING (auto-published via TrackedAsyncSession)
-            order.status = OrderStatus.DOWNLOADING
-            await session.commit()
+            # Update status via service (commits internally with lock)
+            await order_service.update_status(order_id, OrderStatus.DOWNLOADING)
 
             # Use DownloadService with async context manager
             async with DownloadService() as download_svc:
@@ -75,20 +73,20 @@ async def _download_order_images_async(order_id: str) -> None:
             # Commit image updates from service
             await session.commit()
 
-            # Update order status based on results (auto-published)
+            # Update final status via service
             if download_result.total == 0:
-                order.status = OrderStatus.READY_FOR_REVIEW
+                final_status = OrderStatus.READY_FOR_REVIEW
             elif download_result.has_failures:
-                order.status = OrderStatus.ERROR
+                final_status = OrderStatus.ERROR
             else:
-                order.status = OrderStatus.READY_FOR_REVIEW
+                final_status = OrderStatus.READY_FOR_REVIEW
 
-            await session.commit()
+            await order_service.update_status(order_id, final_status)
 
             logger.info(
                 "Image download task complete",
                 order_id=order_id,
-                status=order.status.value,
+                status=final_status.value,
                 total=download_result.total,
                 succeeded=download_result.succeeded,
                 failed=download_result.failed,
@@ -96,6 +94,5 @@ async def _download_order_images_async(order_id: str) -> None:
 
         except Exception as e:
             logger.error("Image download task failed", order_id=order_id, error=str(e))
-            order.status = OrderStatus.ERROR
-            await session.commit()
+            await order_service.update_status(order_id, OrderStatus.ERROR)
             raise

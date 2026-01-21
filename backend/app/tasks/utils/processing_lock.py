@@ -6,9 +6,10 @@ from enum import Enum
 from typing import Generic, TypeVar
 
 import structlog
-from sqlalchemy import and_
+from sqlalchemy import and_, event
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
+from sqlalchemy.orm.attributes import Event
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import SQLModel, select
 
@@ -36,6 +37,10 @@ class LockNotAcquiredError(ProcessingLockError):
     """Attempted to use lock without acquiring it first."""
 
 
+class DirectModificationError(ProcessingLockError):
+    """Direct attribute modification inside lock context is not allowed."""
+
+
 @dataclass
 class RecordLock(Generic[TModel]):
     """Acquired lock on a database record.
@@ -45,6 +50,10 @@ class RecordLock(Generic[TModel]):
             await lock.update_record(status=SomeStatus.PROCESSING)
 
     Using synchronous `with` or calling methods without `async with` raises LockNotAcquiredError.
+
+    HARD CONSTRAINT: Inside the lock context, you MUST NOT modify the record directly.
+    Always use lock.update_record() or lock.verify_and_update_status().
+    Direct modifications will raise DirectModificationError.
     """
 
     session: AsyncSession
@@ -56,6 +65,8 @@ class RecordLock(Generic[TModel]):
     record: TModel | None = field(default=None, init=False)
     _tx: AsyncSessionTransaction | None = field(default=None, init=False)
     _acquired: bool = field(default=False, init=False)
+    _allow_modification: bool = field(default=False, init=False)
+    _listeners_registered: bool = field(default=False, init=False)
 
     @property
     def name(self) -> str:
@@ -75,6 +86,16 @@ class RecordLock(Generic[TModel]):
         if not self._acquired or self.record is None:
             raise LockNotAcquiredError(f"{self.name}: Lock must be used with 'async with locker.acquire() as lock:'")
 
+    def _on_attribute_set(
+        self, target: object, value: object, oldvalue: object, initiator: Event
+    ) -> None:
+        """Event listener that rejects direct modifications inside lock context."""
+        if target is self.record and not self._allow_modification:
+            raise DirectModificationError(
+                f"Direct modification of '{initiator.key}' not allowed inside lock context. "
+                f"Use lock.update_record({initiator.key}=...) or lock.verify_and_update_status() instead."
+            )
+
     async def update_record(self, **fields: object) -> None:
         """Update record fields and flush (keeps transaction open).
 
@@ -85,9 +106,13 @@ class RecordLock(Generic[TModel]):
             )
         """
         self._check_acquired()
-        for key, value in fields.items():
-            setattr(self.record, key, value)
-        await self.session.flush()
+        self._allow_modification = True
+        try:
+            for key, value in fields.items():
+                setattr(self.record, key, value)
+            await self.session.flush()
+        finally:
+            self._allow_modification = False
 
     async def mutate_record(self, fn: Callable[[TModel], None]) -> None:
         """Apply mutation function to record and flush.
@@ -103,8 +128,12 @@ class RecordLock(Generic[TModel]):
         """
         self._check_acquired()
         assert self.record is not None
-        fn(self.record)
-        await self.session.flush()
+        self._allow_modification = True
+        try:
+            fn(self.record)
+            await self.session.flush()
+        finally:
+            self._allow_modification = False
 
     async def verify_and_update_status(
         self,
@@ -165,6 +194,12 @@ class RecordLock(Generic[TModel]):
             if self.record is None:
                 raise RecordNotFoundError(f"{self.name}: {self._predicate_to_text()} not found")
 
+            # Register attribute listeners to detect direct modifications
+            for col in self.model_class.__table__.columns:  # type: ignore[attr-defined]
+                attr = getattr(self.model_class, col.key)
+                event.listen(attr, "set", self._on_attribute_set, propagate=True)
+            self._listeners_registered = True
+
             self._acquired = True
             return self
 
@@ -187,6 +222,13 @@ class RecordLock(Generic[TModel]):
             raise
 
     async def __aexit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: object) -> None:
+        # Unregister listeners first to prevent spurious errors during cleanup
+        if self._listeners_registered:
+            for col in self.model_class.__table__.columns:  # type: ignore[attr-defined]
+                attr = getattr(self.model_class, col.key)
+                event.remove(attr, "set", self._on_attribute_set)
+            self._listeners_registered = False
+
         self._acquired = False
         if self._tx is None:
             return

@@ -2,10 +2,11 @@
 
 import structlog
 from sqlalchemy import func
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import ColoringProcessingStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
@@ -15,15 +16,19 @@ from app.services.coloring.exceptions import (
     VersionNotCompleted,
     VersionOwnershipError,
 )
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import ImageNotFound, ImageNotFoundInOrder, OrderNotFound
 
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(ImageUpdateEvent)
 class OrderImageService:
     """Service for image and version management."""
 
-    def __init__(self, session: AsyncSession):
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+
+    def __init__(self, session: TrackedAsyncSession):
         self.session = session
 
     async def get_order_image(self, *, order_id: str, image_id: int) -> Image:
@@ -68,7 +73,7 @@ class OrderImageService:
 
         Only completed versions can be selected.
         """
-        image = await self.get_image(image_id)
+        image = await self.get_image(image_id)  # Already loads line_item.order
 
         coloring = await self.session.get(ColoringVersion, version_id)
         if not coloring:
@@ -77,6 +82,10 @@ class OrderImageService:
             raise VersionOwnershipError()
         if coloring.status != ColoringProcessingStatus.COMPLETED:
             raise VersionNotCompleted()
+
+        # Set Mercure context BEFORE modifying tracked field
+        order_id = image.line_item.order.id
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
 
         image.selected_coloring_id = version_id
         await self.session.commit()
@@ -89,7 +98,7 @@ class OrderImageService:
 
         Only completed versions can be selected.
         """
-        image = await self.get_image(image_id)
+        image = await self.get_image(image_id)  # Already loads line_item.order
 
         svg = await self.session.get(SvgVersion, version_id)
         if not svg:
@@ -100,6 +109,10 @@ class OrderImageService:
             raise VersionOwnershipError()
         if svg.status != SvgProcessingStatus.COMPLETED:
             raise VersionNotCompleted()
+
+        # Set Mercure context BEFORE modifying tracked field
+        order_id = image.line_item.order.id
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
 
         image.selected_svg_id = version_id
         await self.session.commit()

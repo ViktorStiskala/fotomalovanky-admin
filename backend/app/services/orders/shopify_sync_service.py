@@ -15,14 +15,16 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.enums import OrderStatus
 from app.models.order import LINE_ITEM_POSITION_CONSTRAINT, Image, LineItem, Order
 from app.models.utils.auto_increment import AutoIncrementOnConflict
 from app.services.external.shopify import ShopifyService
+from app.services.mercure.events import OrderUpdateEvent
 
 if TYPE_CHECKING:
     from app.services.external.shopify_client.graphql_client.get_order_details import (
-        GetOrderDetailsOrder,
         GetOrderDetailsOrderLineItemsEdgesNode,
     )
 
@@ -75,6 +77,7 @@ class BatchSyncResult:
     imported: int
     updated: int
     skipped: int
+    failed: int
     total: int
 
     @property
@@ -83,6 +86,7 @@ class BatchSyncResult:
         return self.imported > 0 or self.updated > 0
 
 
+@mercure_autotrack(OrderUpdateEvent)
 class ShopifySyncService:
     """Service for synchronizing orders from Shopify.
 
@@ -91,7 +95,9 @@ class ShopifySyncService:
     notifications are handled by the task layer.
     """
 
-    def __init__(self, session: AsyncSession):
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+
+    def __init__(self, session: TrackedAsyncSession):
         """Initialize sync service.
 
         Args:
@@ -105,9 +111,11 @@ class ShopifySyncService:
 
         This method handles the core ingestion logic:
         1. Fetch order details from Shopify GraphQL API
-        2. Update order metadata (payment status, shipping method)
-        3. Create LineItem records
-        4. Create Image records
+        2. Create LineItem records
+        3. Create Image records
+
+        Note: Order metadata (payment status, shipping method) is updated by
+        OrderService.create_or_update_from_shopify() before this method is called.
 
         Args:
             order: Order to sync (must have shopify_id)
@@ -134,9 +142,6 @@ class ShopifySyncService:
             line_item_count=len(shopify_order.line_items.edges),
         )
 
-        # Update order metadata from Shopify
-        self._update_order_metadata(order, shopify_order)
-
         # Process all line items
         has_images_to_download = False
         for edge in shopify_order.line_items.edges:
@@ -147,17 +152,20 @@ class ShopifySyncService:
 
         return SyncResult(success=True, has_images_to_download=has_images_to_download)
 
-    async def sync_orders_batch(self, limit: int = 20) -> tuple[BatchSyncResult, list[tuple[Order, str]]]:
-        """Fetch recent orders from Shopify and sync them.
+    async def sync_orders_batch(self, limit: int = 20) -> tuple[BatchSyncResult, list[str]]:
+        """Fetch recent orders from Shopify and sync them directly.
 
-        This method uses OrderService.create_or_update_from_shopify internally
-        for consistency with the existing order creation logic.
+        This method:
+        1. Fetches order list from Shopify
+        2. Creates/updates Order records via OrderService
+        3. Calls sync_single_order directly for each order needing sync
+        4. Returns list of order IDs that need image downloads
 
         Args:
             limit: Maximum number of orders to fetch
 
         Returns:
-            Tuple of (BatchSyncResult, list of (order, action) tuples for orders needing ingestion)
+            Tuple of (BatchSyncResult, list of order IDs needing image download)
         """
         from app.services.orders.order_service import OrderService
 
@@ -169,28 +177,67 @@ class ShopifySyncService:
         imported = 0
         updated = 0
         skipped = 0
-        orders_to_ingest: list[tuple[Order, str]] = []
+        failed = 0
+        orders_needing_download: list[str] = []
 
         order_service = OrderService(self.session)
 
         for edge in shopify_orders.edges:
             shopify_order = edge.node
-            order, action = await order_service.create_or_update_from_shopify(shopify_order)
+            shopify_id = int(shopify_order.legacy_resource_id)
 
-            if action == "imported":
-                imported += 1
-                orders_to_ingest.append((order, action))
-            elif action == "updated":
-                updated += 1
-                orders_to_ingest.append((order, action))
-            else:
-                skipped += 1
+            try:
+                order, action = await order_service.create_or_update_from_shopify(shopify_order)
+
+                if action == "imported":
+                    imported += 1
+                elif action == "updated":
+                    updated += 1
+                else:
+                    skipped += 1
+                    continue  # Skip already-processed orders
+
+                # Set Mercure context for this order (required by @mercure_autotrack)
+                self.session.set_mercure_context(Order.id == order.id)  # type: ignore[arg-type]
+
+                # Set status to PROCESSING before sync
+                order.status = OrderStatus.PROCESSING
+                await self.session.commit()
+
+                # Call sync_single_order directly
+                sync_result = await self.sync_single_order(order)
+
+                if not sync_result.success:
+                    order.status = OrderStatus.ERROR
+                    await self.session.commit()
+                    logger.error(
+                        "Order sync failed",
+                        order_id=order.id,
+                        shopify_id=shopify_id,
+                        error=sync_result.error,
+                    )
+                elif sync_result.has_images_to_download:
+                    # Status remains PROCESSING, download task will update
+                    orders_needing_download.append(order.id)
+                else:
+                    order.status = OrderStatus.READY_FOR_REVIEW
+                    await self.session.commit()
+
+            except Exception as e:
+                logger.error(
+                    "Failed to sync order",
+                    shopify_id=shopify_id,
+                    error=str(e),
+                )
+                failed += 1
+                continue
 
         logger.info(
             "Completed Shopify order fetch",
             imported=imported,
             updated=updated,
             skipped=skipped,
+            failed=failed,
             total=len(shopify_orders.edges),
         )
 
@@ -198,16 +245,10 @@ class ShopifySyncService:
             imported=imported,
             updated=updated,
             skipped=skipped,
+            failed=failed,
             total=len(shopify_orders.edges),
         )
-        return result, orders_to_ingest
-
-    def _update_order_metadata(self, order: Order, shopify_order: "GetOrderDetailsOrder") -> None:
-        """Update order with metadata from Shopify."""
-        if shopify_order.display_financial_status:
-            order.payment_status = shopify_order.display_financial_status.value
-        if shopify_order.shipping_line:
-            order.shipping_method = shopify_order.shipping_line.title
+        return result, orders_needing_download
 
     async def _process_line_item(
         self,

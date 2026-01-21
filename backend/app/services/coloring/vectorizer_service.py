@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion, SvgVersion
 from app.models.enums import ColoringProcessingStatus, SvgProcessingStatus
 from app.models.order import Image, LineItem, Order
@@ -18,12 +20,17 @@ from app.services.coloring.exceptions import (
     NoImagesToProcess,
     SvgVersionNotFound,
     VersionNotInErrorState,
+    VersionOwnershipError,
 )
+from app.services.exceptions import UnexpectedStatusError
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import ImageNotFound, OrderNotFound
+from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
 
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(ImageUpdateEvent)
 class VectorizerService:
     """Service for SVG vectorization management.
 
@@ -31,7 +38,9 @@ class VectorizerService:
     API routes should call service methods and dispatch tasks separately.
     """
 
-    def __init__(self, session: AsyncSession):
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+
+    def __init__(self, session: TrackedAsyncSession):
         self.session = session
 
     async def create_version(
@@ -174,23 +183,49 @@ class VectorizerService:
 
         return version_ids
 
-    async def prepare_retry(self, version_id: int) -> SvgVersion:
+    async def prepare_retry(
+        self, version_id: int, *, order_id: str, image_id: int
+    ) -> SvgVersion:
         """Prepare a failed SVG version for retry.
+
+        Uses RecordLock to prevent race conditions with task recovery.
+        Validates ownership inside the lock for atomic validation.
 
         Returns the updated version. Caller is responsible for dispatching the task.
         """
-        svg = await self.session.get(SvgVersion, version_id)
-        if not svg:
+        # Set Mercure context FIRST (before any tracked field changes)
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
+
+        lock = RecordLock(
+            session=self.session,
+            model_class=SvgVersion,
+            predicate=SvgVersion.id == version_id,  # type: ignore[arg-type]
+        )
+
+        try:
+            async with lock:
+                version = lock.record
+                assert version is not None
+
+                # Validate ownership INSIDE the lock (atomic)
+                if version.image_id != image_id:
+                    raise VersionOwnershipError()
+
+                # Verify status and update atomically using RecordLock helper
+                await lock.verify_and_update_status(
+                    expected=SvgProcessingStatus.ERROR,
+                    new_status=SvgProcessingStatus.QUEUED,
+                )
+
+            await self.session.commit()
+
+            logger.info("Prepared SVG version for retry", version_id=version_id)
+
+            return version
+        except RecordNotFoundError:
             raise SvgVersionNotFound()
-        if svg.status != SvgProcessingStatus.ERROR:
+        except UnexpectedStatusError:
             raise VersionNotInErrorState()
-
-        svg.status = SvgProcessingStatus.QUEUED
-        await self.session.commit()
-
-        logger.info("Prepared SVG version for retry", version_id=version_id)
-
-        return svg
 
     def _find_coloring_for_svg(self, image: Image) -> ColoringVersion | None:
         """Find the best coloring version to use for SVG generation.
