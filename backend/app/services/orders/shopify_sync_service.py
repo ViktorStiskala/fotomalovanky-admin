@@ -185,8 +185,6 @@ class ShopifySyncService:
         for edge in shopify_orders.edges:
             shopify_order = edge.node
             shopify_id = int(shopify_order.legacy_resource_id)
-            order: Order | None = None
-            status_set_to_processing = False
 
             try:
                 order, action = await order_service.create_or_update_from_shopify(shopify_order)
@@ -205,7 +203,6 @@ class ShopifySyncService:
                 # Set status to PROCESSING before sync
                 order.status = OrderStatus.PROCESSING
                 await self.session.commit()
-                status_set_to_processing = True
 
                 # Call sync_single_order directly
                 sync_result = await self.sync_single_order(order)
@@ -232,17 +229,6 @@ class ShopifySyncService:
                     shopify_id=shopify_id,
                     error=str(e),
                 )
-                # If we set status to PROCESSING and then failed, update to ERROR
-                if order is not None and status_set_to_processing:
-                    try:
-                        order.status = OrderStatus.ERROR
-                        await self.session.commit()
-                    except Exception as commit_error:
-                        logger.error(
-                            "Failed to set order status to ERROR after sync failure",
-                            order_id=order.id,
-                            error=str(commit_error),
-                        )
                 failed += 1
                 continue
 
@@ -365,3 +351,4 @@ class ShopifySyncService:
         statement = select(Order.id).where(Order.status == OrderStatus.PROCESSING)
         result = await session.execute(statement)
         return list(result.scalars().all())
+
