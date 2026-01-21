@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Module-level set to track which fields have had listeners registered globally
+# This prevents duplicate listener registration across sessions
+_GLOBALLY_REGISTERED_FIELDS: set[InstrumentedAttribute[object]] = set()
+
 
 class TrackedAsyncSession(AsyncSession):
     """AsyncSession with automatic Mercure event tracking.
@@ -86,11 +90,17 @@ class TrackedAsyncSession(AsyncSession):
 
         Note: Only called by @mercure_autotrack decorator. Do not call directly.
         """
+        global _GLOBALLY_REGISTERED_FIELDS
         for field in fields:
-            if field not in self._tracked_fields:
-                self._tracked_fields.add(field)
+            # Track locally for this session
+            self._tracked_fields.add(field)
+
+            # Only register ONE global listener per field (across all sessions)
+            if field not in _GLOBALLY_REGISTERED_FIELDS:
+                _GLOBALLY_REGISTERED_FIELDS.add(field)
                 # Register listener for this field's "set" event
-                event.listen(field, "set", self._on_field_change, propagate=True)
+                # Use the class method which dispatches to the correct session
+                event.listen(field, "set", TrackedAsyncSession._on_field_change_static, propagate=True)
                 logger.debug(
                     "Registered change listener",
                     field=f"{field.class_.__name__}.{field.key}",
@@ -243,10 +253,12 @@ class TrackedAsyncSession(AsyncSession):
         self._deferred_events.clear()
         self._deferred_mutated_models.clear()
 
-    def _on_field_change(self, target: Any, value: Any, oldvalue: Any, initiator: Any) -> None:
-        """SQLAlchemy attribute listener for tracked field changes.
+    @staticmethod
+    def _on_field_change_static(target: Any, value: Any, oldvalue: Any, initiator: Any) -> None:
+        """SQLAlchemy attribute listener for tracked field changes (static method).
 
-        This is called when any tracked field is set to a new value.
+        This is registered ONCE per field globally (not per session) and dispatches
+        to the correct TrackedAsyncSession via object_session(target).
         """
         if value == oldvalue:
             return
@@ -271,6 +283,15 @@ class TrackedAsyncSession(AsyncSession):
                 session_type=type(sync_session).__name__,
             )
             return
+
+        # Check if this session is actually tracking this field
+        # (session may not have called _track_changes for this field)
+        field_tracked = any(
+            f.key == initiator.key and f.class_ is type(target)
+            for f in tracked_session._tracked_fields
+        )
+        if not field_tracked:
+            return  # This session isn't tracking this field
 
         # Protection: Error if tracked field changes without context being set
         if not tracked_session._context_set:
