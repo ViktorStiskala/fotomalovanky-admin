@@ -65,7 +65,6 @@
 		},
 		"search.exclude": {
 			"**/.cursor/plans/**": true,
-			"**/.cursor/rules/*.mdc": true,
 		},
 		"cursor.general.globalCursorIgnoreList": [
 			"**/.env",
