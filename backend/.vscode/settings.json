@@ -55,5 +55,34 @@
             "source.fixAll.ruff": "explicit",
             "source.organizeImports.ruff": "explicit"
         }
-    }
+    },
+    "accessibility.windowTitleOptimized": false,
+    "peacock.affectStatusAndTitleBorders": false,
+    "workbench.colorCustomizations": {
+        "activityBar.activeBackground": "#d33ec4",
+        "activityBar.background": "#d33ec4",
+        "activityBar.foreground": "#e7e7e7",
+        "activityBar.inactiveForeground": "#e7e7e799",
+        "activityBarBadge.background": "#484e12",
+        "activityBarBadge.foreground": "#e7e7e7",
+        "sash.hoverBorder": "#d33ec4",
+        "statusBar.background": "#b529a7",
+        "statusBar.foreground": "#e7e7e7",
+        "statusBarItem.hoverBackground": "#d33ec4",
+        "statusBarItem.remoteBackground": "#b529a7",
+        "statusBarItem.remoteForeground": "#e7e7e7",
+        "commandCenter.border": "#e7e7e799",
+        "titleBar.activeBackground": "#b529a7",
+        "titleBar.activeForeground": "#e7e7e7",
+        "titleBar.inactiveBackground": "#b529a799",
+        "titleBar.inactiveForeground": "#e7e7e799"
+    },
+    "peacock.color": "#b529a7",
+    "editor.stickyScroll.enabled": true,
+    "editor.stickyScroll.defaultModel": "outlineModel",
+    "editor.stickyScroll.scrollWithEditor": true,
+    "workbench.editor.autoLockGroups": {
+        "workbench.editor.markdownPlan": true
+    },
+    "peacock.affectTitleBar": true
 }

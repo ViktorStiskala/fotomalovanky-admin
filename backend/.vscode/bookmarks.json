@@ -1,0 +1,14 @@
+{
+	"files": [
+		{
+			"path": "app/tasks/utils/processing_lock.py",
+			"bookmarks": [
+				{
+					"line": 154,
+					"column": 0,
+					"label": "RecordLock.__aenter__"
+				}
+			]
+		}
+	]
+}
