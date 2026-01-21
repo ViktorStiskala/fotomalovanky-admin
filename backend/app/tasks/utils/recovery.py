@@ -11,7 +11,7 @@ import structlog
 
 from app.db import async_session_maker
 from app.tasks.utils.decorators import get_recoverable_tasks
-from app.utils.redis_lock import RedisLock
+from app.utils.redis_lock import LockUnavailable, RedisLock
 
 logger = structlog.get_logger(__name__)
 
@@ -27,16 +27,15 @@ def run_recovery() -> None:
     Uses Redis lock to ensure only one recovery runs at a time,
     even across container restarts.
     """
-    with RedisLock("dramatiq:recovery:task", ttl=RECOVERY_TASK_LOCK_TTL) as lock:
-        if not lock.acquired:
-            logger.debug("Recovery task already running, skipping")
-            return
-
-        total = asyncio.run(_recover_stuck_tasks())
-        if total > 0:
-            logger.info("Task recovery complete", tasks_recovered=total)
-        else:
-            logger.debug("No stuck tasks found")
+    try:
+        with RedisLock("dramatiq:recovery:task", ttl=RECOVERY_TASK_LOCK_TTL, raise_exc=True):
+            total = asyncio.run(_recover_stuck_tasks())
+            if total > 0:
+                logger.info("Task recovery complete", tasks_recovered=total)
+            else:
+                logger.debug("No stuck tasks found")
+    except LockUnavailable:
+        logger.debug("Recovery task already running, skipping")
 
 
 async def _recover_stuck_tasks() -> int:
@@ -60,10 +59,12 @@ async def _recover_stuck_tasks() -> int:
                 items = await get_incomplete_fn(session)
                 for item in items:
                     # Deduplicate: skip if already dispatched recently
-                    if RedisLock(
+                    # auto_release=False means lock stays until TTL expires (deduplication pattern)
+                    with RedisLock(
                         f"recovery:{task_fn.actor_name}:{item['version_id']}",
                         ttl=RECOVERY_DISPATCH_TTL,
-                    ).try_acquire_lock():
+                        auto_release=False,
+                    ):
                         logger.info(
                             "Recovering stuck task",
                             task=task_fn.actor_name,

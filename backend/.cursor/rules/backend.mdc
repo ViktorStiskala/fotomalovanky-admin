@@ -24,10 +24,10 @@ app/services/
 │   └── download_service.py    # DownloadService class
 ├── orders/                    # Domain: order management
 │   ├── exceptions.py          # OrderNotFound, ImageNotFound, etc.
-│   ├── order_service.py
+│   ├── order_service.py       # Order CRUD (uses @mercure_autotrack)
 │   ├── image_service.py
 │   ├── shopify_image_download_service.py  # Shopify image download (uses DownloadService)
-│   └── shopify_sync_service.py    # Shopify order sync logic
+│   └── shopify_sync_service.py    # Shopify order sync (uses @mercure_autotrack)
 ├── coloring/                  # Domain: image processing
 │   ├── exceptions.py          # ColoringVersionNotFound, SvgVersionNotFound, etc.
 │   ├── coloring_service.py
@@ -321,9 +321,8 @@ app/tasks/
 │   └── processing_lock.py   # RecordLock, ProcessingLock
 ├── orders/                  # mirrors services/orders/
 │   ├── __init__.py
-│   ├── fetch_shopify.py
-│   ├── image_download.py
-│   └── order_ingestion.py
+│   ├── fetch_shopify_order.py # Batch fetch + single order ingestion
+│   └── image_download.py      # Download/upload order images to S3
 └── coloring/                # mirrors services/coloring/
     ├── __init__.py
     ├── generate_coloring.py
@@ -539,19 +538,21 @@ class MyProcessingService:
 
 ### Tasks with Order Status Changes
 
-Tasks that directly modify `Order.status` MUST:
-1. Call `session.track_changes(Order.status)` at start
-2. Call `session.set_mercure_context(Order.id == order_id)` at start
+Tasks that modify `Order.status` MUST use `OrderService.update_status()`:
 
 ```python
 async with task_db_session() as session:
-    # Enable auto-tracking for Order.status changes
-    session.track_changes(Order.status)  # type: ignore[arg-type]
-    session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
+    order_service = OrderService(session)
     
-    order.status = OrderStatus.PROCESSING  # Auto-published after commit
-    await session.commit()
+    # Update status via service (uses RecordLock, commits internally)
+    await order_service.update_status(order_id, OrderStatus.PROCESSING)
 ```
+
+**Tasks MUST NOT:**
+
+- Call `session._track_changes()` directly (internal API)
+- Call `session.set_mercure_context()` manually
+- Modify `order.status` directly - always use service methods
 
 ### Task Context Requirements
 
@@ -606,7 +607,141 @@ async with task_db_session() as session:
 - Events are flushed on success
 - Events are cleared on exception (no partial updates sent to frontend)
 
-**Example use case:** `fetch_shopify.py` uses this to batch events when syncing multiple orders.
+**Example use case:** `fetch_shopify_order.py` uses this to batch events when syncing multiple orders.
+
+## Shopify Order Sync Architecture
+
+### Service Responsibilities
+
+- **OrderService** (uses `@mercure_autotrack(OrderUpdateEvent)`): Order CRUD, creation from Shopify/webhook data
+  - `create_or_update_from_shopify()` - batch fetch order creation/update from GraphQL response
+  - `get_or_create_from_webhook()` - webhook order creation from raw payload (idempotent)
+  - `prepare_sync()` - reset order status for re-processing
+
+- **ShopifySyncService** (uses `@mercure_autotrack(OrderUpdateEvent)`): Shopify API calls, LineItem/Image creation
+  - `sync_single_order(order)` - fetch full order details from Shopify, create LineItems/Images
+  - `sync_orders_batch(limit)` - orchestrates batch sync, calls `sync_single_order` for each order
+
+### Sync Flows
+
+**Webhook Flow** (single order, async via task):
+1. Webhook endpoint → `OrderService.get_or_create_from_webhook()` → Order created
+2. `ingest_order` task dispatched
+3. Task creates `ShopifySyncService`, sets Mercure context
+4. Task calls `sync_single_order(order)` → LineItems/Images created
+5. `download_order_images` task dispatched if images need downloading
+6. Mercure events auto-published on each commit
+
+**Batch Fetch Flow** (multiple orders, sync within single task):
+1. `fetch_orders_from_shopify` task starts
+2. `ShopifySyncService.sync_orders_batch(limit)` called
+3. For each Shopify order: `OrderService.create_or_update_from_shopify()` + `sync_single_order()`
+4. `download_order_images` tasks dispatched for orders with images
+5. Mercure events auto-published on each commit
+
+**Manual Sync Flow** (re-process existing order):
+1. API endpoint → `OrderService.prepare_sync()` → status reset to PENDING
+2. `ingest_order` task dispatched
+3. Same as webhook flow from step 3
+
+### Key Points
+
+- **No duplicate code**: `sync_orders_batch` reuses `sync_single_order` directly
+- **Mercure auto-tracking**: Both services use `@mercure_autotrack(OrderUpdateEvent)`
+- **ListUpdateEvent**: Auto-published when Orders are inserted (via `trigger_models` mechanism)
+- **OrderUpdateEvent**: Auto-published when `Order.status` changes
+
+## Services with @mercure_autotrack (MANDATORY)
+
+**ALL services that modify tracked fields MUST use `@mercure_autotrack`:**
+
+| Service | Event Type | Tracked Fields |
+|---------|------------|----------------|
+| `OrderService` | `OrderUpdateEvent` | `Order.status` |
+| `ShopifySyncService` | `OrderUpdateEvent` | `Order.status` |
+| `ColoringService` | `ImageUpdateEvent` | `ColoringVersion.status` |
+| `VectorizerService` | `ImageUpdateEvent` | `SvgVersion.status` |
+| `OrderImageService` | `ImageUpdateEvent` | `Image.selected_*_id` |
+| `ColoringGenerationService` | `ImageUpdateEvent` | `ColoringVersion.status` |
+| `SvgGenerationService` | `ImageUpdateEvent` | `SvgVersion.status` |
+
+**Service Layer Structure with @mercure_autotrack:**
+
+```
+app/services/
+├── orders/
+│   ├── order_service.py        # @mercure_autotrack(OrderUpdateEvent)
+│   ├── image_service.py        # @mercure_autotrack(ImageUpdateEvent)
+│   └── shopify_sync_service.py # @mercure_autotrack(OrderUpdateEvent)
+├── coloring/
+│   ├── coloring_service.py     # @mercure_autotrack(ImageUpdateEvent)
+│   ├── vectorizer_service.py   # @mercure_autotrack(ImageUpdateEvent)
+│   ├── coloring_generation_service.py # @mercure_autotrack(ImageUpdateEvent)
+│   └── svg_generation_service.py      # @mercure_autotrack(ImageUpdateEvent)
+```
+
+## RecordLock for Status Transitions (MANDATORY)
+
+Status transition methods that may race with background tasks MUST use `RecordLock`:
+
+```python
+from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
+from app.services.exceptions import UnexpectedStatusError
+
+async def prepare_retry(self, version_id: int, *, order_id: str, image_id: int):
+    # Set Mercure context FIRST
+    self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)
+    
+    lock = RecordLock(
+        session=self.session,
+        model_class=ColoringVersion,
+        predicate=ColoringVersion.id == version_id,
+    )
+    
+    try:
+        async with lock:
+            version = lock.record
+            assert version is not None
+            
+            # Validate ownership INSIDE the lock (atomic)
+            if version.image_id != image_id:
+                raise VersionOwnershipError()
+            
+            # Verify status and update atomically using RecordLock helper
+            await lock.verify_and_update_status(
+                expected=ColoringProcessingStatus.ERROR,
+                new_status=ColoringProcessingStatus.QUEUED,
+            )
+        
+        await self.session.commit()
+        return version
+    except RecordNotFoundError:
+        raise ColoringVersionNotFound()
+    except UnexpectedStatusError:
+        raise VersionNotInErrorState()
+```
+
+**Operations requiring RecordLock:**
+
+- `ColoringService.prepare_retry()` - ERROR → QUEUED transition
+- `VectorizerService.prepare_retry()` - ERROR → QUEUED transition
+- `OrderService.prepare_sync()` - * → PENDING transition
+- `OrderService.update_status()` - any Order.status transition (prevents race with user actions)
+
+**Operations NOT requiring locking:**
+
+- `select_*_version()` - idempotent (re-selecting is fine)
+- `create_version()` - INSERT operations, no state machine
+
+### HARD CONSTRAINT - Inside `async with lock:` block:
+
+- **NEVER** modify tracked fields directly (e.g., `record.status = ...`)
+- **NEVER** call `session.flush()` or `session.commit()` manually
+- **ALWAYS** use RecordLock helper methods:
+  - `lock.update_record(status=NewStatus)` - for simple updates
+  - `lock.verify_and_update_status(expected, new_status)` - for validated transitions
+- Commit AFTER the lock context exits: `await self.session.commit()`
+- RecordLock raises `DirectModificationError` if you attempt direct modification inside the lock
 
 ## Testing Considerations
 

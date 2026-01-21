@@ -22,6 +22,7 @@ from app.services.coloring.exceptions import (
     NoImagesToProcess,
     SvgVersionNotFound,
     VersionNotInErrorState,
+    VersionOwnershipError,
 )
 from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import (
@@ -130,7 +131,6 @@ async def retry_version(
     coloring_service: ColoringServiceDep,
     vectorizer_service: VectorizerServiceDep,
     image_service: ImageServiceDep,
-    mercure: MercureServiceDep,
 ) -> ColoringVersionResponse | SvgVersionResponse:
     """Retry a failed version generation with the same settings."""
     try:
@@ -139,28 +139,24 @@ async def retry_version(
         order_id = image.line_item.order.id
 
         if version_type == VersionType.COLORING:
-            coloring_version = await coloring_service.prepare_retry(version_id)
-            # Verify ownership
-            if coloring_version.image_id != image_id:
-                raise HTTPException(status_code=400, detail="Version does not belong to this image")
+            # Ownership validated inside service with lock
+            coloring_version = await coloring_service.prepare_retry(
+                version_id, order_id=order_id, image_id=image_id
+            )
             assert coloring_version.id is not None
             generate_coloring.send(coloring_version.id, order_id=order_id, image_id=image_id)
 
-            # Notify frontend about retry
-            await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
-
+            # ImageUpdateEvent auto-published via @mercure_autotrack
             return ColoringVersionResponse.from_model(coloring_version)
         else:  # VersionType.SVG
-            svg_version = await vectorizer_service.prepare_retry(version_id)
-            # Verify ownership
-            if svg_version.image_id != image_id:
-                raise HTTPException(status_code=400, detail="Version does not belong to this image")
+            # Ownership validated inside service with lock
+            svg_version = await vectorizer_service.prepare_retry(
+                version_id, order_id=order_id, image_id=image_id
+            )
             assert svg_version.id is not None
             generate_svg.send(svg_version.id, order_id=order_id, image_id=image_id)
 
-            # Notify frontend about retry
-            await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
-
+            # ImageUpdateEvent auto-published via @mercure_autotrack
             return SvgVersionResponse.from_model(svg_version)
     except (ColoringVersionNotFound, SvgVersionNotFound):
         raise HTTPException(status_code=404, detail=f"{version_type.capitalize()} version not found")
@@ -168,4 +164,9 @@ async def retry_version(
         raise HTTPException(
             status_code=400,
             detail="Can only retry versions with error status",
+        )
+    except VersionOwnershipError:
+        raise HTTPException(
+            status_code=400,
+            detail="Version does not belong to this image",
         )

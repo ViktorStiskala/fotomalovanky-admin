@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion
 from app.models.enums import ColoringProcessingStatus
 from app.models.order import Image, LineItem, Order
@@ -17,16 +19,21 @@ from app.services.coloring.exceptions import (
     ColoringVersionNotFound,
     NoImagesToProcess,
     VersionNotInErrorState,
+    VersionOwnershipError,
 )
+from app.services.exceptions import UnexpectedStatusError
+from app.services.mercure.events import ImageUpdateEvent
 from app.services.orders.exceptions import (
     ImageNotDownloaded,
     ImageNotFound,
     OrderNotFound,
 )
+from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
 
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(ImageUpdateEvent)
 class ColoringService:
     """Service for coloring version management.
 
@@ -34,7 +41,9 @@ class ColoringService:
     API routes should call service methods and dispatch tasks separately.
     """
 
-    def __init__(self, session: AsyncSession):
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+
+    def __init__(self, session: TrackedAsyncSession):
         self.session = session
 
     async def create_version(
@@ -164,23 +173,49 @@ class ColoringService:
 
         return version_ids
 
-    async def prepare_retry(self, version_id: int) -> ColoringVersion:
+    async def prepare_retry(
+        self, version_id: int, *, order_id: str, image_id: int
+    ) -> ColoringVersion:
         """Prepare a failed coloring version for retry.
+
+        Uses RecordLock to prevent race conditions with task recovery.
+        Validates ownership inside the lock for atomic validation.
 
         Returns the updated version. Caller is responsible for dispatching the task.
         """
-        coloring = await self.session.get(ColoringVersion, version_id)
-        if not coloring:
+        # Set Mercure context FIRST (before any tracked field changes)
+        self.session.set_mercure_context(Order.id == order_id, Image.id == image_id)  # type: ignore[arg-type]
+
+        lock = RecordLock(
+            session=self.session,
+            model_class=ColoringVersion,
+            predicate=ColoringVersion.id == version_id,  # type: ignore[arg-type]
+        )
+
+        try:
+            async with lock:
+                version = lock.record
+                assert version is not None
+
+                # Validate ownership INSIDE the lock (atomic)
+                if version.image_id != image_id:
+                    raise VersionOwnershipError()
+
+                # Verify status and update atomically using RecordLock helper
+                await lock.verify_and_update_status(
+                    expected=ColoringProcessingStatus.ERROR,
+                    new_status=ColoringProcessingStatus.QUEUED,
+                )
+
+            await self.session.commit()
+
+            logger.info("Prepared coloring version for retry", version_id=version_id)
+
+            return version
+        except RecordNotFoundError:
             raise ColoringVersionNotFound()
-        if coloring.status != ColoringProcessingStatus.ERROR:
+        except UnexpectedStatusError:
             raise VersionNotInErrorState()
-
-        coloring.status = ColoringProcessingStatus.QUEUED
-        await self.session.commit()
-
-        logger.info("Prepared coloring version for retry", version_id=version_id)
-
-        return coloring
 
     async def _get_next_version(self, image_id: int) -> int:
         """Get the next version number for a coloring version."""

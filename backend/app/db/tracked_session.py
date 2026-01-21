@@ -32,7 +32,7 @@ class TrackedAsyncSession(AsyncSession):
     - Tracks model insert/delete for BatchMercureEvent.trigger_models
 
     Usage:
-        session.track_changes(ColoringVersion.status)
+        # Services decorated with @mercure_autotrack automatically call _track_changes
         session.set_mercure_context(Order.id == order_id, Image.id == image_id)
         # ... make changes ...
         await session.commit()  # Events published automatically
@@ -81,12 +81,10 @@ class TrackedAsyncSession(AsyncSession):
         # Register the after_flush_postexec listener for this session
         event.listen(self.sync_session, "after_flush_postexec", self._after_flush_postexec)
 
-    def track_changes(self, *fields: InstrumentedAttribute[object]) -> Self:
-        """Register fields to watch for changes.
+    def _track_changes(self, *fields: InstrumentedAttribute[object]) -> Self:
+        """Internal method - register fields to watch for changes.
 
-        Usage:
-            session.track_changes(ColoringVersion.status)
-            session.track_changes(ColoringVersion.status, Image.selected_svg_id)
+        Note: Only called by @mercure_autotrack decorator. Do not call directly.
         """
         for field in fields:
             if field not in self._tracked_fields:

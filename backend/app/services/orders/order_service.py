@@ -11,14 +11,17 @@ from typing import TYPE_CHECKING
 import structlog
 from dateutil.parser import parse as parse_datetime
 from sqlalchemy import func
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import select
 
+from app.db.mercure_protocol import mercure_autotrack
+from app.db.tracked_session import TrackedAsyncSession
 from app.models.coloring import ColoringVersion
 from app.models.enums import OrderStatus
 from app.models.order import Image, LineItem, Order
+from app.services.mercure.events import OrderUpdateEvent
 from app.services.orders.exceptions import OrderNotFound
+from app.tasks.utils.processing_lock import RecordLock, RecordNotFoundError
 from app.utils.shopify_helpers import build_customer_name
 
 if TYPE_CHECKING:
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+@mercure_autotrack(OrderUpdateEvent)
 class OrderService:
     """Service for order management operations.
 
@@ -37,7 +41,9 @@ class OrderService:
     External API calls should be made in Dramatiq tasks.
     """
 
-    def __init__(self, session: AsyncSession):
+    session: TrackedAsyncSession  # Required by MercureTrackable protocol
+
+    def __init__(self, session: TrackedAsyncSession):
         self.session = session
 
     async def list_orders(self, *, skip: int = 0, limit: int = 50) -> tuple[list[Order], int]:
@@ -108,18 +114,58 @@ class OrderService:
     async def prepare_sync(self, order_id: str) -> Order:
         """Reset order status for re-processing.
 
+        Uses RecordLock to prevent race conditions with running tasks.
+
         Returns the updated order. Caller is responsible for dispatching the task.
         """
-        statement = select(Order).where(Order.id == order_id)
-        result = await self.session.execute(statement)
-        order = result.scalars().first()
-        if not order:
+        # Set Mercure context for auto-publishing OrderUpdateEvent
+        self.session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
+
+        lock = RecordLock(
+            session=self.session,
+            model_class=Order,
+            predicate=Order.id == order_id,  # type: ignore[arg-type]
+        )
+
+        try:
+            async with lock:
+                # Update status using RecordLock helper (flushes automatically)
+                await lock.update_record(status=OrderStatus.PENDING)
+
+            await self.session.commit()
+            return lock.record  # type: ignore[return-value]
+        except RecordNotFoundError:
             raise OrderNotFound()
 
-        order.status = OrderStatus.PENDING
-        await self.session.commit()
+    async def update_status(self, order_id: str, status: OrderStatus) -> Order:
+        """Update order status with Mercure auto-tracking.
 
-        return order
+        Uses RecordLock to prevent race conditions with concurrent updates
+        (e.g., user clicks "Sync" while task is processing).
+
+        Args:
+            order_id: Order ULID
+            status: New status
+
+        Returns:
+            Updated order
+        """
+        self.session.set_mercure_context(Order.id == order_id)  # type: ignore[arg-type]
+
+        lock = RecordLock(
+            session=self.session,
+            model_class=Order,
+            predicate=Order.id == order_id,  # type: ignore[arg-type]
+        )
+
+        try:
+            async with lock:
+                await lock.update_record(status=status)
+
+            await self.session.commit()
+            return lock.record  # type: ignore[return-value]
+        except RecordNotFoundError:
+            raise OrderNotFound()
 
     async def create_or_update_from_shopify(
         self,
@@ -141,6 +187,9 @@ class OrderService:
         existing_order = existing_result.scalars().first()
 
         if existing_order:
+            # Set Mercure context for auto-publishing OrderUpdateEvent
+            self.session.set_mercure_context(Order.id == existing_order.id)  # type: ignore[arg-type]
+
             # Always update basic order info from Shopify
             self._update_order_from_shopify(existing_order, shopify_order)
 
@@ -198,6 +247,88 @@ class OrderService:
         )
 
         return order, "imported"
+
+    async def get_or_create_from_webhook(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[Order, bool]:
+        """Create or get order from Shopify webhook payload.
+
+        This method is idempotent - calling it multiple times with the same
+        shopify_id will return the existing order without creating a duplicate.
+
+        Args:
+            payload: Shopify webhook payload dict
+
+        Returns:
+            Tuple of (order, is_new) where is_new is True if order was created.
+
+        Raises:
+            ValueError: If shopify_id is missing from payload.
+        """
+        raw_shopify_id = payload.get("id")
+        if not raw_shopify_id:
+            raise ValueError("Missing order ID in payload")
+
+        shopify_id = int(str(raw_shopify_id))
+
+        # Check if order already exists
+        statement = select(Order).where(Order.shopify_id == shopify_id)
+        result = await self.session.execute(statement)
+        existing_order = result.scalar_one_or_none()
+
+        if existing_order:
+            logger.info("Order already exists", shopify_id=shopify_id, order_id=existing_order.id)
+            return existing_order, False
+
+        # Extract customer info
+        customer_data = payload.get("customer")
+        customer_name: str | None = None
+        if isinstance(customer_data, dict):
+            first_name = customer_data.get("first_name")
+            last_name = customer_data.get("last_name")
+            customer_name = build_customer_name(
+                str(first_name) if first_name else None,
+                str(last_name) if last_name else None,
+            )
+
+        # Extract order number
+        shopify_order_number = str(payload.get("name", ""))
+
+        # Extract email
+        email = payload.get("email")
+
+        # Extract payment status (financial_status in webhook)
+        financial_status = payload.get("financial_status")
+        payment_status = str(financial_status) if financial_status else None
+
+        # Extract shipping method from shipping_lines array
+        shipping_method: str | None = None
+        shipping_lines = payload.get("shipping_lines")
+        if isinstance(shipping_lines, list) and shipping_lines:
+            first_shipping = shipping_lines[0]
+            if isinstance(first_shipping, dict):
+                title = first_shipping.get("title")
+                shipping_method = str(title) if title else None
+
+        # Create new order
+        order = Order(
+            order_number=shopify_order_number,
+            shopify_id=shopify_id,
+            shopify_order_number=shopify_order_number,
+            customer_email=str(email) if email else None,
+            customer_name=customer_name,
+            payment_status=payment_status,
+            shipping_method=shipping_method,
+            status=OrderStatus.PENDING,
+        )
+        self.session.add(order)
+        await self.session.flush()  # Get the order.id
+
+        logger.info("Created new order from webhook", shopify_id=shopify_id, order_id=order.id)
+
+        # ListUpdateEvent is auto-published on commit via trigger_models
+        return order, True
 
     def _update_order_from_shopify(
         self,
