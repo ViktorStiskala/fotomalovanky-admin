@@ -583,6 +583,31 @@ await mercure.publish(ImageUpdateEvent(order_id=order_id, image_id=image_id))
 await mercure.publish(ListUpdateEvent(order_ids=[]))  # Full refresh
 ```
 
+### Bulk Operations (Batch Event Deferral)
+
+When performing bulk operations with multiple commits, use `deferred_batch_events()` to batch
+Mercure events into a single publish. This prevents flooding the frontend with many
+individual events (e.g., 20 `ListUpdateEvent` messages instead of one batched message).
+
+**Note:** Only events collected by a `BatchMercureEvent` are deferred (e.g., `OrderUpdateEvent`
+is collected by `ListUpdateEvent`). Non-collected events like `ImageUpdateEvent` publish
+immediately even during deferral.
+
+```python
+async with task_db_session() as session:
+    async with session.deferred_batch_events():
+        # Multiple commits happen here
+        for item in items:
+            await service.process(item)  # Each may commit
+    # Single batched ListUpdateEvent published here
+```
+
+**MUST** use `deferred_batch_events()` context manager (not the private `_start_deferring_events()`) to ensure:
+- Events are flushed on success
+- Events are cleared on exception (no partial updates sent to frontend)
+
+**Example use case:** `fetch_shopify.py` uses this to batch events when syncing multiple orders.
+
 ## Testing Considerations
 
 - Services are independently testable (inject mock session)

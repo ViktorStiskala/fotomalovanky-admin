@@ -30,16 +30,17 @@ def fetch_orders_from_shopify(limit: int = 20) -> None:
 async def _fetch_orders_async(limit: int) -> None:
     """Async implementation of fetch_orders_from_shopify."""
     async with task_db_session() as session:
-        service = ShopifySyncService(session)
-        result, orders_to_ingest = await service.sync_orders_batch(limit=limit)
+        # Defer batch events until all orders are processed
+        # This batches multiple ListUpdateEvents into a single publish
+        async with session.deferred_batch_events():
+            service = ShopifySyncService(session)
+            result, orders_to_ingest = await service.sync_orders_batch(limit=limit)
+        # Single batched ListUpdateEvent published here
 
         # Dispatch ingest tasks for new/updated orders
         for order, _action in orders_to_ingest:
             assert order.id is not None
             ingest_order.send(order.id)
-
-    # ListUpdateEvent is auto-published by TrackedAsyncSession when Orders are created
-    # (via BatchMercureEvent.trigger_models mechanism)
 
     logger.info(
         "Completed Shopify order fetch",

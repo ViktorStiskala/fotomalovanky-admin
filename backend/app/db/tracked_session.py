@@ -1,6 +1,8 @@
 """TrackedAsyncSession with automatic Mercure event publishing."""
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Self
 
 import structlog
@@ -51,6 +53,11 @@ class TrackedAsyncSession(AsyncSession):
     _context_set: bool
     _required_context_fields: frozenset[str]
 
+    # Event deferral state (for batching across multiple commits)
+    _defer_mercure_events: bool
+    _deferred_events: list["BaseMercureEvent"]
+    _deferred_mutated_models: set[type]
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._tracked_fields = set()
@@ -60,6 +67,11 @@ class TrackedAsyncSession(AsyncSession):
         self._mutated_models = set()
         self._context_set = False
         self._required_context_fields = frozenset()
+
+        # Event deferral state (for batching across multiple commits)
+        self._defer_mercure_events = False
+        self._deferred_events = []
+        self._deferred_mutated_models = set()
 
         # Store back-reference from sync_session to this async session
         # This is needed because object_session(target) returns the sync session,
@@ -119,6 +131,119 @@ class TrackedAsyncSession(AsyncSession):
                     f"Required Mercure context fields missing: {missing}. Ensure predicates include: {hint}"
                 )
         return self
+
+    def _start_deferring_events(self) -> Self:
+        """Start deferring Mercure event publishing until flush_deferred_events() is called.
+
+        When deferral is enabled, events are collected across multiple commits
+        instead of being published immediately after each commit. This is useful
+        for bulk operations where you want to batch events into a single publish.
+
+        This is a private method. Use the `deferred_events()` context manager instead.
+
+        Returns:
+            Self for method chaining.
+        """
+        self._defer_mercure_events = True
+        return self
+
+    @asynccontextmanager
+    async def deferred_batch_events(self) -> AsyncIterator[Self]:
+        """Context manager for deferring batch events with automatic flush/cleanup.
+
+        Only defers events that are collected by a BatchMercureEvent (e.g., OrderUpdateEvent
+        is collected by ListUpdateEvent). Non-collected events (e.g., ImageUpdateEvent)
+        publish immediately even during deferral.
+
+        When the context exits successfully, deferred events are published as a single
+        batched message. If an exception occurs, deferred events are discarded.
+
+        Usage:
+            async with session.deferred_batch_events():
+                # Multiple commits happen here
+                for item in items:
+                    await service.process(item)  # Each may commit
+            # Single batched ListUpdateEvent published here
+
+        Yields:
+            Self for method chaining if needed.
+        """
+        self._start_deferring_events()
+        try:
+            yield self
+            await self.flush_deferred_events()
+        except BaseException:
+            # Clear deferred events on error - don't publish partial updates
+            self._deferred_events.clear()
+            self._deferred_mutated_models.clear()
+            self._defer_mercure_events = False
+            raise
+
+    async def flush_deferred_events(self) -> None:
+        """Publish all deferred events as a single batch.
+
+        This method processes all events collected during deferral:
+        1. Deduplicates events by identity_key() (last one wins)
+        2. Creates batch events from collected events (e.g., ListUpdateEvent)
+        3. Publishes all events
+
+        Called automatically by the `deferred_events()` context manager.
+        """
+        self._defer_mercure_events = False
+
+        if not self._deferred_events and not self._deferred_mutated_models:
+            return
+
+        if not self._mercure_service:
+            logger.debug("No Mercure service configured, skipping deferred event publish")
+            self._deferred_events.clear()
+            self._deferred_mutated_models.clear()
+            return
+
+        # Import here to avoid circular imports
+        from app.services.mercure.events import BATCH_EVENT_REGISTRY
+
+        # Deduplicate by identity_key (last wins - ensures latest state)
+        seen: dict[str, "BaseMercureEvent"] = {}
+        for deferred_event in self._deferred_events:
+            seen[deferred_event.identity_key()] = deferred_event
+
+        events_to_publish: list["BaseMercureEvent"] = list(seen.values())
+
+        # Create batch events from collected events
+        for batch_cls in BATCH_EVENT_REGISTRY:
+            # Find events that should be collected by this batch type
+            collected = [e for e in events_to_publish if type(e) in batch_cls.collect_events]
+
+            # Find model mutations relevant to this batch type
+            changed_models = [m for m in batch_cls.trigger_models if m in self._deferred_mutated_models]
+
+            # Create batch event if there are collected events OR model mutations
+            if collected or changed_models:
+                batch_event = batch_cls.from_collected(collected, changed_models=changed_models)
+                if batch_event is not None:
+                    events_to_publish.append(batch_event)
+
+        logger.debug(
+            "Publishing deferred Mercure events",
+            event_count=len(events_to_publish),
+            event_types=[type(e).__name__ for e in events_to_publish],
+        )
+
+        # Publish all events
+        coros = [self._mercure_service.publish(e) for e in events_to_publish]
+
+        if self._bg_tasks:
+            # Non-blocking: schedule via BackgroundTasks
+            for coro in coros:
+                self._bg_tasks.run(coro)
+        else:
+            # Blocking: await all directly
+            await asyncio.gather(*coros, return_exceptions=True)
+
+        # Clear state
+        self._deferred_events.clear()
+        self._deferred_mutated_models.clear()
 
     def _on_field_change(self, target: Any, value: Any, oldvalue: Any, initiator: Any) -> None:
         """SQLAlchemy attribute listener for tracked field changes.
@@ -328,11 +453,62 @@ class TrackedAsyncSession(AsyncSession):
 
         Called automatically by commit(). Do not call directly.
 
-        1. Deduplicates events by identity_key() (last one wins)
-        2. Creates batch events from collected events via BATCH_EVENT_REGISTRY
-        3. Uses bg_tasks if available, otherwise asyncio.gather
+        1. If deferral is enabled, defers only events collected by BatchMercureEvent
+        2. Non-collected events (e.g., ImageUpdateEvent) publish immediately
+        3. Deduplicates events by identity_key() (last one wins)
+        4. Creates batch events from collected events via BATCH_EVENT_REGISTRY
+        5. Uses bg_tasks if available, otherwise asyncio.gather
         """
         if not self._pending_events and not self._mutated_models:
+            return
+
+        # Import here to avoid circular imports
+        from app.services.mercure.events import BATCH_EVENT_REGISTRY
+
+        # If deferral is enabled, only defer events that are collected by BatchMercureEvent
+        # Non-collected events (like ImageUpdateEvent) should publish immediately
+        if self._defer_mercure_events:
+            # Build set of event types that are collected by any batch event
+            collected_types: set[type] = set()
+            for batch_cls in BATCH_EVENT_REGISTRY:
+                collected_types.update(batch_cls.collect_events)
+
+            # Split events: defer collected ones, publish non-collected immediately
+            events_to_defer: list["BaseMercureEvent"] = []
+            events_to_publish_now: list["BaseMercureEvent"] = []
+
+            for event in self._pending_events:
+                if type(event) in collected_types:
+                    events_to_defer.append(event)
+                else:
+                    events_to_publish_now.append(event)
+
+            # Defer collected events and model mutations
+            self._deferred_events.extend(events_to_defer)
+            self._deferred_mutated_models.update(self._mutated_models)
+            self._pending_events.clear()
+            self._mutated_models.clear()
+
+            if events_to_defer:
+                logger.debug(
+                    "Deferring Mercure events",
+                    deferred_count=len(self._deferred_events),
+                    deferred_models=len(self._deferred_mutated_models),
+                )
+
+            # Publish non-collected events immediately (if any)
+            if events_to_publish_now and self._mercure_service:
+                logger.debug(
+                    "Publishing non-deferred events immediately",
+                    event_count=len(events_to_publish_now),
+                    event_types=[type(e).__name__ for e in events_to_publish_now],
+                )
+                coros = [self._mercure_service.publish(e) for e in events_to_publish_now]
+                if self._bg_tasks:
+                    for coro in coros:
+                        self._bg_tasks.run(coro)
+                else:
+                    await asyncio.gather(*coros, return_exceptions=True)
             return
 
         if not self._mercure_service:
@@ -340,9 +516,6 @@ class TrackedAsyncSession(AsyncSession):
             self._pending_events.clear()
             self._mutated_models.clear()
             return
-
-        # Import here to avoid circular imports
-        from app.services.mercure.events import BATCH_EVENT_REGISTRY
 
         # Deduplicate by identity_key (last wins - ensures latest state)
         seen: dict[str, "BaseMercureEvent"] = {}
