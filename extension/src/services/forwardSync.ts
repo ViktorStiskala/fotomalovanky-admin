@@ -26,6 +26,8 @@ export class ForwardSyncService {
 
   /**
    * Perform forward sync for all folders
+   *
+   * Merge order: Root settings → subFolderSettings.defaults → filter rootSettings.exclude → folders[].settings → output
    */
   async sync(): Promise<number> {
     const workspace = await this.workspaceConfig.load();
@@ -43,39 +45,41 @@ export class ForwardSyncService {
       return 0;
     }
 
-    // Get exclude patterns
-    const excludePatterns = (globalSettings[SETTINGS_KEYS.syncExcludePatterns] as string[]) ?? [];
+    // Get subFolderSettings.defaults and exclude patterns
+    const subFolderDefaults =
+      (globalSettings[SETTINGS_KEYS.syncSubFolderSettingsDefaults] as Settings) ?? {};
+    const excludePatterns =
+      (globalSettings[SETTINGS_KEYS.syncRootSettingsExclude] as string[]) ?? [];
     const matcher = new PatternMatcher(excludePatterns);
-
-    // Filter global settings (remove excluded patterns and workspaceManager.* keys)
-    const filteredGlobalSettings = this.filterGlobalSettings(globalSettings, matcher);
 
     let syncedCount = 0;
 
     for (const folder of workspace.folders) {
-      // Skip root folder
-      if (folder.path === '.') {
+      // Skip root folder (comparing resolved paths)
+      const isRoot = await this.workspaceConfig.isWorkspaceRoot(folder.path);
+      if (isRoot) {
         this.outputChannel.appendLine(`Skipping root folder`);
         continue;
       }
 
-      // Skip folders without settings key
-      if (folder.settings === undefined) {
-        this.outputChannel.appendLine(
-          `Skipping folder "${folder.name || folder.path}": no settings`
-        );
-        continue;
-      }
-
       try {
-        // Merge global settings with folder settings
-        const mergedSettings = this.merger.merge(filteredGlobalSettings, folder.settings);
+        // 1. Remove workspaceManager.* keys from root
+        const rootWithoutWM = this.removeWorkspaceManagerKeys(globalSettings);
 
-        // Remove workspaceManager.* keys from output
-        const cleanedSettings = this.removeWorkspaceManagerKeys(mergedSettings);
+        // 2. Merge root → subFolderSettings.defaults
+        const withDefaults = this.merger.merge(rootWithoutWM, subFolderDefaults);
+
+        // 3. Apply exclude patterns (prevents inheritance, but folders can re-add)
+        const filtered = this.filterByPatterns(withDefaults, matcher);
+
+        // 4. Merge with folder settings (folder has final say)
+        const merged = this.merger.merge(filtered, folder.settings ?? {});
+
+        // 5. Remove any remaining workspaceManager.* keys and write
+        const cleaned = this.removeWorkspaceManagerKeys(merged);
 
         // Write to .vscode/settings.json
-        await this.writeSettingsJson(folder.path, cleanedSettings);
+        await this.writeSettingsJson(folder.path, cleaned);
 
         this.outputChannel.appendLine(
           `Synced settings to ${folder.name || folder.path}/.vscode/settings.json`
@@ -92,17 +96,12 @@ export class ForwardSyncService {
   }
 
   /**
-   * Filter global settings, removing excluded patterns and workspaceManager.* keys
+   * Filter settings by exclude patterns (excludePatterns = "don't inherit")
    */
-  private filterGlobalSettings(settings: Settings, matcher: PatternMatcher): Settings {
+  private filterByPatterns(settings: Settings, matcher: PatternMatcher): Settings {
     const result: Settings = {};
 
     for (const [key, value] of Object.entries(settings)) {
-      // Skip workspaceManager.* keys
-      if (key.startsWith(WORKSPACE_MANAGER_PREFIX)) {
-        continue;
-      }
-
       // Skip keys matching exclude patterns
       if (matcher.isExcluded(key)) {
         continue;
@@ -133,7 +132,7 @@ export class ForwardSyncService {
    * Write settings to a folder's .vscode/settings.json
    */
   private async writeSettingsJson(folderPath: string, settings: Settings): Promise<void> {
-    const resolvedPath = this.workspaceConfig.resolveFolderPath(folderPath);
+    const resolvedPath = await this.workspaceConfig.resolveFolderPath(folderPath);
     const vscodeDir = path.join(resolvedPath, '.vscode');
     const settingsFile = path.join(vscodeDir, 'settings.json');
 

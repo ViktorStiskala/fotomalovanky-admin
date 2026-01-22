@@ -8,7 +8,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import JSON5 from 'json5';
+import * as jsonc from 'jsonc-parser';
 import { WorkspaceConfigService } from './workspaceConfig';
 import { SettingsMerger } from './settingsMerger';
 import { PatternMatcher } from '../utils/patternMatcher';
@@ -45,8 +45,9 @@ export class ReverseSyncService {
         return false;
       }
 
-      // Skip root folder
-      if (folderPath === '.') {
+      // Skip root folder (comparing resolved paths)
+      const isRoot = await this.workspaceConfig.isWorkspaceRoot(folderPath);
+      if (isRoot) {
         this.outputChannel.appendLine('Reverse sync skipped: root folder');
         return false;
       }
@@ -72,9 +73,9 @@ export class ReverseSyncService {
 
       // Get exclude patterns (folder + root merged)
       const rootExclude =
-        (workspace.settings[SETTINGS_KEYS.reverseSyncExcludePatterns] as string[]) ?? [];
+        (workspace.settings[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as string[]) ?? [];
       const folderExclude =
-        (folder.settings?.[SETTINGS_KEYS.reverseSyncExcludePatterns] as string[]) ?? [];
+        (folder.settings?.[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as string[]) ?? [];
       const matcher = new PatternMatcher([...rootExclude, ...folderExclude]);
 
       // Read current .vscode/settings.json
@@ -120,11 +121,11 @@ export class ReverseSyncService {
    */
   private async readSettingsJson(folderPath: string): Promise<Settings | null> {
     try {
-      const resolvedPath = this.workspaceConfig.resolveFolderPath(folderPath);
+      const resolvedPath = await this.workspaceConfig.resolveFolderPath(folderPath);
       const settingsFile = path.join(resolvedPath, '.vscode', 'settings.json');
 
       const content = await fs.readFile(settingsFile, 'utf-8');
-      return JSON5.parse(content) as Settings;
+      return jsonc.parse(content) as Settings;
     } catch {
       return null;
     }
@@ -132,27 +133,35 @@ export class ReverseSyncService {
 
   /**
    * Calculate what forward sync would generate for this folder
+   *
+   * Merge order: Root settings → subFolderSettings.defaults → filter rootSettings.exclude → folders[].settings
    */
   private calculateExpectedSettings(globalSettings: Settings, folder: FolderConfig): Settings {
-    // Filter global settings (remove workspaceManager.* keys)
-    const filteredGlobal: Settings = {};
+    // 1. Remove workspaceManager.* keys from root
+    const rootWithoutWM: Settings = {};
     for (const [key, value] of Object.entries(globalSettings)) {
       if (!key.startsWith(WORKSPACE_MANAGER_PREFIX)) {
-        filteredGlobal[key] = value;
+        rootWithoutWM[key] = value;
       }
     }
 
-    // Apply sync.excludePatterns
-    const excludePatterns = (globalSettings[SETTINGS_KEYS.syncExcludePatterns] as string[]) ?? [];
+    // 2. Merge with subFolderSettings.defaults
+    const subFolderDefaults =
+      (globalSettings[SETTINGS_KEYS.syncSubFolderSettingsDefaults] as Settings) ?? {};
+    const withDefaults = this.merger.merge(rootWithoutWM, subFolderDefaults);
+
+    // 3. Apply rootSettings.exclude (filter - "don't inherit")
+    const excludePatterns =
+      (globalSettings[SETTINGS_KEYS.syncRootSettingsExclude] as string[]) ?? [];
     const matcher = new PatternMatcher(excludePatterns);
-    const filteredForSync: Settings = {};
-    for (const [key, value] of Object.entries(filteredGlobal)) {
+    const filtered: Settings = {};
+    for (const [key, value] of Object.entries(withDefaults)) {
       if (!matcher.isExcluded(key)) {
-        filteredForSync[key] = value;
+        filtered[key] = value;
       }
     }
 
-    // Merge with folder settings (also filter workspaceManager.* from folder settings)
+    // 4. Merge with folder settings (also filter workspaceManager.* from folder settings)
     const filteredFolderSettings: Settings = {};
     if (folder.settings) {
       for (const [key, value] of Object.entries(folder.settings)) {
@@ -162,7 +171,7 @@ export class ReverseSyncService {
       }
     }
 
-    return this.merger.merge(filteredForSync, filteredFolderSettings);
+    return this.merger.merge(filtered, filteredFolderSettings);
   }
 
   /**

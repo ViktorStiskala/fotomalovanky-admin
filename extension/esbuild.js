@@ -8,10 +8,13 @@ async function main() {
     bundle: true,
     format: 'cjs',
     platform: 'node',
+    target: 'node18',
     sourcemap: !production,
     minify: production,
     external: ['vscode'], // CRITICAL: don't bundle the VS Code API
     outfile: 'dist/extension.js',
+    // Ensure proper module resolution for packages like jsonc-parser
+    mainFields: ['module', 'main'],
   });
 
   if (watch) {

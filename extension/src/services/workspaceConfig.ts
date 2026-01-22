@@ -1,13 +1,14 @@
 /**
  * Workspace configuration service
  *
- * Handles reading and writing .code-workspace files with JSON5 support
+ * Handles reading and writing .code-workspace files with JSONC support
+ * (JSON with comments and trailing commas)
  */
 
 import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import JSON5 from 'json5';
+import * as jsonc from 'jsonc-parser';
 import type { FolderConfig, Settings, WorkspaceFile } from '../types';
 
 export class WorkspaceConfigService {
@@ -58,7 +59,7 @@ export class WorkspaceConfigService {
     }
 
     const content = await fs.readFile(this.workspacePath, 'utf-8');
-    const data = JSON5.parse(content) as WorkspaceFile;
+    const data = jsonc.parse(content) as WorkspaceFile;
 
     return {
       folders: data.folders || [],
@@ -69,7 +70,7 @@ export class WorkspaceConfigService {
   /**
    * Save the workspace file
    *
-   * Preserves JSON5 formatting by using JSON.stringify with indentation
+   * Preserves formatting by using JSON.stringify with indentation
    */
   async save(workspaceFile: WorkspaceFile): Promise<void> {
     if (!this.workspacePath) {
@@ -78,7 +79,7 @@ export class WorkspaceConfigService {
 
     // Read the original file to preserve any extra fields
     const content = await fs.readFile(this.workspacePath, 'utf-8');
-    const originalData = JSON5.parse(content) as Record<string, unknown>;
+    const originalData = jsonc.parse(content) as Record<string, unknown>;
 
     // Update only folders and settings
     const updatedData = {
@@ -145,13 +146,49 @@ export class WorkspaceConfigService {
   }
 
   /**
-   * Resolve a relative folder path to an absolute path
+   * Resolve a folder path to an absolute canonical path (resolves symlinks)
+   *
+   * Handles both relative and absolute paths.
    */
-  resolveFolderPath(folderPath: string): string {
+  async resolveFolderPath(folderPath: string): Promise<string> {
     const workspaceDir = this.getWorkspaceDir();
     if (!workspaceDir) {
       throw new Error('No workspace directory found');
     }
-    return path.join(workspaceDir, folderPath);
+
+    let resolved: string;
+    if (path.isAbsolute(folderPath)) {
+      resolved = folderPath;
+    } else {
+      resolved = path.join(workspaceDir, folderPath);
+    }
+
+    // Resolve symlinks to get canonical path
+    return fs.realpath(resolved);
+  }
+
+  /**
+   * Get the resolved workspace root directory (resolves symlinks)
+   */
+  async getResolvedWorkspaceDir(): Promise<string> {
+    const workspaceDir = this.getWorkspaceDir();
+    if (!workspaceDir) {
+      throw new Error('No workspace directory found');
+    }
+    return fs.realpath(workspaceDir);
+  }
+
+  /**
+   * Check if a folder path resolves to the workspace root directory
+   */
+  async isWorkspaceRoot(folderPath: string): Promise<boolean> {
+    try {
+      const resolved = await this.resolveFolderPath(folderPath);
+      const workspaceDir = await this.getResolvedWorkspaceDir();
+      return resolved === workspaceDir;
+    } catch {
+      // If path doesn't exist, it can't be the workspace root
+      return false;
+    }
   }
 }

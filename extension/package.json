@@ -42,11 +42,11 @@
           "scope": "window",
           "description": "Enable/disable Workspace Manager"
         },
-        "workspaceManager.autoSync": {
+        "workspaceManager.autoSync.enabled": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "scope": "window",
-          "description": "Enable automatic sync via file watchers"
+          "description": "Enable automatic sync via file watchers (enable via command palette or status bar)"
         },
         "workspaceManager.sync.enabled": {
           "type": "boolean",
@@ -54,14 +54,20 @@
           "scope": "window",
           "description": "Enable forward sync (root settings -> folder .vscode/settings.json)"
         },
-        "workspaceManager.sync.excludePatterns": {
+        "workspaceManager.sync.rootSettings.exclude": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
           "scope": "window",
-          "description": "Patterns to exclude from forward sync (picomatch, use ! for negation)"
+          "description": "Patterns to NOT inherit from root settings to subfolders (picomatch, use ! for negation). Folders can still explicitly add these settings."
+        },
+        "workspaceManager.sync.subFolderSettings.defaults": {
+          "type": "object",
+          "default": {},
+          "scope": "window",
+          "description": "Default settings applied to all non-root folders (folder-specific settings take precedence)"
         },
         "workspaceManager.reverseSync.enabled": {
           "type": "boolean",
@@ -69,7 +75,7 @@
           "scope": "resource",
           "description": "Enable reverse sync (folder UI changes -> workspace file)"
         },
-        "workspaceManager.reverseSync.excludePatterns": {
+        "workspaceManager.reverseSync.folderSettings.exclude": {
           "type": "array",
           "items": {
             "type": "string"
@@ -101,7 +107,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "json5": "^2.2.3",
+    "jsonc-parser": "^3.3.1",
     "picomatch": "^4.0.1"
   }
 }

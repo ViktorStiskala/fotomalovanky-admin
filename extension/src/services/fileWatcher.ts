@@ -10,12 +10,14 @@ import * as path from 'path';
 import { ForwardSyncService } from './forwardSync';
 import { ReverseSyncService } from './reverseSync';
 import { WorkspaceConfigService } from './workspaceConfig';
+import { DiagnosticsService } from './diagnostics';
 import { SETTINGS_KEYS } from '../types';
 
 export class FileWatcherService {
   private workspaceConfig: WorkspaceConfigService;
   private forwardSync: ForwardSyncService;
   private reverseSync: ReverseSyncService;
+  private diagnosticsService: DiagnosticsService;
   private outputChannel: vscode.OutputChannel;
 
   private isForwardSyncing = false;
@@ -30,11 +32,13 @@ export class FileWatcherService {
     workspaceConfig: WorkspaceConfigService,
     forwardSync: ForwardSyncService,
     reverseSync: ReverseSyncService,
+    diagnosticsService: DiagnosticsService,
     outputChannel: vscode.OutputChannel
   ) {
     this.workspaceConfig = workspaceConfig;
     this.forwardSync = forwardSync;
     this.reverseSync = reverseSync;
+    this.diagnosticsService = diagnosticsService;
     this.outputChannel = outputChannel;
   }
 
@@ -103,10 +107,13 @@ export class FileWatcherService {
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.code-workspace');
 
     const onChange = async () => {
-      // Skip if we're currently doing a reverse sync (we caused this change)
+      // Always update diagnostics when workspace file changes
+      await this.diagnosticsService.validate();
+
+      // Skip sync if we're currently doing a reverse sync (we caused this change)
       if (this.isReverseSyncing) {
         this.outputChannel.appendLine(
-          'Workspace file change detected, but skipping (reverse sync in progress)'
+          'Workspace file change detected, but skipping sync (reverse sync in progress)'
         );
         return;
       }
@@ -249,15 +256,15 @@ export class FileWatcherService {
     try {
       const workspace = await this.workspaceConfig.load();
       const enabled = workspace.settings[SETTINGS_KEYS.enabled];
-      const autoSync = workspace.settings[SETTINGS_KEYS.autoSync];
+      const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled];
 
       if (enabled === false) {
         return false;
       }
 
-      return autoSync !== false;
+      return autoSync === true;
     } catch {
-      return true; // Default to enabled
+      return false; // Default to disabled
     }
   }
 

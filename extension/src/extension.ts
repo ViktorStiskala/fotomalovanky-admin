@@ -9,6 +9,7 @@ import { WorkspaceConfigService } from './services/workspaceConfig';
 import { ForwardSyncService } from './services/forwardSync';
 import { ReverseSyncService } from './services/reverseSync';
 import { FileWatcherService } from './services/fileWatcher';
+import { DiagnosticsService } from './services/diagnostics';
 import { SETTINGS_KEYS } from './types';
 
 let outputChannel: vscode.OutputChannel;
@@ -17,6 +18,7 @@ let workspaceConfig: WorkspaceConfigService;
 let forwardSync: ForwardSyncService;
 let reverseSync: ReverseSyncService;
 let fileWatcher: FileWatcherService;
+let diagnosticsService: DiagnosticsService;
 
 /**
  * Extension activation
@@ -39,7 +41,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Initialize services
   forwardSync = new ForwardSyncService(workspaceConfig, outputChannel);
   reverseSync = new ReverseSyncService(workspaceConfig, outputChannel);
-  fileWatcher = new FileWatcherService(workspaceConfig, forwardSync, reverseSync, outputChannel);
+  diagnosticsService = new DiagnosticsService(workspaceConfig, outputChannel);
+  fileWatcher = new FileWatcherService(
+    workspaceConfig,
+    forwardSync,
+    reverseSync,
+    diagnosticsService,
+    outputChannel
+  );
 
   // Create status bar item
   statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -57,6 +66,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Register disposables
   context.subscriptions.push(outputChannel);
   context.subscriptions.push({ dispose: () => fileWatcher.dispose() });
+  context.subscriptions.push({ dispose: () => diagnosticsService.dispose() });
 
   // Listen for configuration changes
   context.subscriptions.push(
@@ -86,9 +96,12 @@ export function deactivate(): void {
  */
 async function initialize(): Promise<void> {
   try {
+    // Run diagnostics validation on initialization
+    await diagnosticsService.validate();
+
     const workspace = await workspaceConfig.load();
     const enabled = workspace.settings[SETTINGS_KEYS.enabled] !== false;
-    const autoSync = workspace.settings[SETTINGS_KEYS.autoSync] !== false;
+    const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled] === true;
 
     if (!enabled) {
       outputChannel.appendLine('Extension is disabled');
@@ -122,7 +135,7 @@ async function handleConfigurationChange(): Promise<void> {
   try {
     const workspace = await workspaceConfig.load();
     const enabled = workspace.settings[SETTINGS_KEYS.enabled] !== false;
-    const autoSync = workspace.settings[SETTINGS_KEYS.autoSync] !== false;
+    const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled] === true;
 
     if (!enabled) {
       fileWatcher.stopWatching();
@@ -232,7 +245,7 @@ async function handleEnableAutoSync(): Promise<void> {
 
   try {
     const workspace = await workspaceConfig.load();
-    workspace.settings[SETTINGS_KEYS.autoSync] = true;
+    workspace.settings[SETTINGS_KEYS.autoSyncEnabled] = true;
     await workspaceConfig.save(workspace);
 
     fileWatcher.startWatching();
@@ -257,7 +270,7 @@ async function handleDisableAutoSync(): Promise<void> {
 
   try {
     const workspace = await workspaceConfig.load();
-    workspace.settings[SETTINGS_KEYS.autoSync] = false;
+    workspace.settings[SETTINGS_KEYS.autoSyncEnabled] = false;
     await workspaceConfig.save(workspace);
 
     fileWatcher.stopWatching();

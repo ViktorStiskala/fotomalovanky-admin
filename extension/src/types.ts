@@ -53,7 +53,7 @@ export interface ExtensionSettings {
  */
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
   enabled: true,
-  autoSync: true,
+  autoSync: false,
   sync: {
     enabled: true,
     excludePatterns: [],
@@ -69,11 +69,12 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
  */
 export const SETTINGS_KEYS = {
   enabled: 'workspaceManager.enabled',
-  autoSync: 'workspaceManager.autoSync',
+  autoSyncEnabled: 'workspaceManager.autoSync.enabled',
   syncEnabled: 'workspaceManager.sync.enabled',
-  syncExcludePatterns: 'workspaceManager.sync.excludePatterns',
+  syncRootSettingsExclude: 'workspaceManager.sync.rootSettings.exclude',
+  syncSubFolderSettingsDefaults: 'workspaceManager.sync.subFolderSettings.defaults',
   reverseSyncEnabled: 'workspaceManager.reverseSync.enabled',
-  reverseSyncExcludePatterns: 'workspaceManager.reverseSync.excludePatterns',
+  reverseSyncFolderSettingsExclude: 'workspaceManager.reverseSync.folderSettings.exclude',
 } as const;
 
 /**
