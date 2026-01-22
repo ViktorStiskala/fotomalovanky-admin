@@ -74,25 +74,38 @@ export class DiagnosticsService {
       }
 
       const folderPath = pathNode.value as string;
-
-      // Check if this folder resolves to the workspace root
       const isRoot = await this.workspaceConfig.isWorkspaceRoot(folderPath);
-      if (!isRoot) {
-        continue;
-      }
 
-      // Check if this root folder has settings defined
-      // Find the "settings" property node (includes key + value) rather than just the value
-      const settingsPropertyNode = this.findPropertyNode(folderNode, 'settings');
-      if (settingsPropertyNode) {
-        const range = this.nodeToRange(text, settingsPropertyNode);
+      // Check for flat "settings.xxx" keys on ALL folders
+      const flatSettingsKeys = this.findFlatSettingsKeys(folderNode);
+      for (const propertyNode of flatSettingsKeys) {
+        const range = this.nodeToRange(text, propertyNode);
         const diagnostic = new vscode.Diagnostic(
           range,
-          'Settings on the root folder are ignored. Use root "settings" instead.',
-          vscode.DiagnosticSeverity.Error
+          'Flat settings syntax is not supported. Use a nested "settings" object instead.',
+          vscode.DiagnosticSeverity.Hint
         );
+        diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
         diagnostic.source = 'Workspace Manager';
+        diagnostic.code = 'flat-settings';
         diagnostics.push(diagnostic);
+      }
+
+      // Check for nested settings object only on ROOT folder
+      if (isRoot) {
+        const settingsPropertyNode = this.findPropertyNode(folderNode, 'settings');
+        if (settingsPropertyNode) {
+          const range = this.nodeToRange(text, settingsPropertyNode);
+          const diagnostic = new vscode.Diagnostic(
+            range,
+            'Settings on the root folder are ignored. Use root "settings" instead.',
+            vscode.DiagnosticSeverity.Hint
+          );
+          diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
+          diagnostic.source = 'Workspace Manager';
+          diagnostic.code = 'root-folder-settings';
+          diagnostics.push(diagnostic);
+        }
       }
     }
 
@@ -119,6 +132,29 @@ export class DiagnosticsService {
     }
 
     return undefined;
+  }
+
+  /**
+   * Find all flat settings keys (e.g., "settings.editor.fontSize") in a folder object
+   *
+   * Returns property nodes for keys that start with "settings."
+   */
+  private findFlatSettingsKeys(folderNode: jsonc.Node): jsonc.Node[] {
+    const result: jsonc.Node[] = [];
+    if (folderNode.type !== 'object' || !folderNode.children) {
+      return result;
+    }
+
+    for (const child of folderNode.children) {
+      if (child.type === 'property' && child.children?.[0]) {
+        const keyNode = child.children[0];
+        if (keyNode.type === 'string' && keyNode.value?.startsWith?.('settings.')) {
+          result.push(child);
+        }
+      }
+    }
+
+    return result;
   }
 
   /**

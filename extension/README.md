@@ -192,6 +192,40 @@ The status bar shows current sync status:
 
 View detailed logs in **Output → Workspace Manager** panel.
 
+## Diagnostics & Quick Fixes
+
+The extension shows hints for common workspace configuration issues:
+
+### Flat Settings Syntax
+
+If you write settings using the flat `"settings.xxx"` syntax directly on a folder object:
+
+```json
+{
+  "name": "Frontend",
+  "path": "frontend",
+  "settings.editor.fontSize": 14 // This is invalid!
+}
+```
+
+The extension will show a faded hint and offer a quick fix to move it to the proper nested `settings` object:
+
+```json
+{
+  "name": "Frontend",
+  "path": "frontend",
+  "settings": {
+    "editor.fontSize": 14
+  }
+}
+```
+
+### Root Folder Settings
+
+If you add a `settings` object to the folder entry that represents the workspace root (e.g., `"path": "."`), those settings are ignored by VS Code. The extension will show a hint and offer to move them to the root `settings` object.
+
+Both diagnostics appear as faded text (like unused code) to indicate that the settings are being ignored, not that they're breaking errors. Click on the lightbulb or press `Cmd+.` to apply the quick fix.
+
 ## Deep Merge Behavior
 
 When merging settings:

@@ -10,6 +10,7 @@ import { ForwardSyncService } from './services/forwardSync';
 import { ReverseSyncService } from './services/reverseSync';
 import { FileWatcherService } from './services/fileWatcher';
 import { DiagnosticsService } from './services/diagnostics';
+import { WorkspaceCodeActionProvider } from './services/codeActions';
 import { SETTINGS_KEYS } from './types';
 
 let outputChannel: vscode.OutputChannel;
@@ -61,6 +62,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('workspaceManager.syncReverse', handleSyncReverse),
     vscode.commands.registerCommand('workspaceManager.enableAutoSync', handleEnableAutoSync),
     vscode.commands.registerCommand('workspaceManager.disableAutoSync', handleDisableAutoSync)
+  );
+
+  // Register code action provider for quick fixes
+  const codeActionProvider = new WorkspaceCodeActionProvider(workspaceConfig);
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      { pattern: '**/*.code-workspace' },
+      codeActionProvider,
+      { providedCodeActionKinds: WorkspaceCodeActionProvider.providedCodeActionKinds }
+    )
   );
 
   // Register disposables
