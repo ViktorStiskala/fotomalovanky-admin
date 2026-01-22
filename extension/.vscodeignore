@@ -1,0 +1,11 @@
+.vscode/**
+src/**
+node_modules/**
+!node_modules/json5/**
+!node_modules/picomatch/**
+.gitignore
+.prettierrc
+.prettierignore
+tsconfig.json
+esbuild.js
+*.map
