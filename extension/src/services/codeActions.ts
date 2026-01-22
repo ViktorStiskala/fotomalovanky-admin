@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import * as jsonc from 'jsonc-parser';
 import { WorkspaceConfigService } from './workspaceConfig';
+import { SETTINGS_KEYS } from '../types';
 
 export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
   static readonly providedCodeActionKinds = [vscode.CodeActionKind.QuickFix];
@@ -80,7 +81,94 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       actions.push(fix);
     }
 
+    // Quick fix for root-only settings in folder settings
+    const rootOnlyDiagnostics = context.diagnostics.filter(
+      (d) => d.code === 'root-only-setting-in-folder'
+    );
+    if (rootOnlyDiagnostics.length > 0) {
+      const fix = new vscode.CodeAction('Move to root settings', vscode.CodeActionKind.QuickFix);
+      fix.diagnostics = rootOnlyDiagnostics;
+      fix.edit = this.createMoveToRootSettingsEdit(document, rootOnlyDiagnostics);
+      fix.isPreferred = true;
+      actions.push(fix);
+    }
+
+    // Quick fix for workspaceManager.* settings in subFolderSettings.defaults
+    const wmInDefaultsDiagnostics = context.diagnostics.filter(
+      (d) => d.code === 'wm-settings-in-defaults'
+    );
+    for (const diagnostic of wmInDefaultsDiagnostics) {
+      const settingKey = this.extractSettingKeyFromRange(document, diagnostic.range);
+      if (settingKey) {
+        const fix = new vscode.CodeAction(
+          `Remove "${settingKey}" setting`,
+          vscode.CodeActionKind.QuickFix
+        );
+        fix.diagnostics = [diagnostic];
+        fix.edit = this.createRemoveFromDefaultsEdit(document, diagnostic);
+        fix.isPreferred = true;
+        actions.push(fix);
+      }
+    }
+
+    // Quick fixes for reverseSync exclude patterns with disabled reverseSync
+    const reverseExcludeDiagnostics = context.diagnostics.filter(
+      (d) => d.code === 'reverse-exclude-when-disabled'
+    );
+    for (const diagnostic of reverseExcludeDiagnostics) {
+      // Option 1: Remove the exclude patterns
+      const removeFix = new vscode.CodeAction(
+        `Remove "${SETTINGS_KEYS.reverseSyncFolderSettingsExclude}" setting`,
+        vscode.CodeActionKind.QuickFix
+      );
+      removeFix.diagnostics = [diagnostic];
+      removeFix.edit = this.createRemoveExcludePatternsEdit(document, diagnostic);
+      actions.push(removeFix);
+
+      // Option 2: Enable reverseSync
+      const enableFix = new vscode.CodeAction(
+        `Set "${SETTINGS_KEYS.reverseSyncEnabled}" to "true"`,
+        vscode.CodeActionKind.QuickFix
+      );
+      enableFix.diagnostics = [diagnostic];
+      enableFix.edit = this.createEnableReverseSyncEdit(document, diagnostic);
+      enableFix.isPreferred = true;
+      actions.push(enableFix);
+    }
+
     return actions;
+  }
+
+  /**
+   * Extract the setting key name from a diagnostic range
+   */
+  private extractSettingKeyFromRange(
+    document: vscode.TextDocument,
+    range: vscode.Range
+  ): string | null {
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+    if (!rootNode) return null;
+
+    const offset = document.offsetAt(range.start);
+    const node = jsonc.findNodeAtOffset(rootNode, offset);
+    if (!node) return null;
+
+    // Navigate to find the property key
+    // The diagnostic range covers the property node, so we need to find the key
+    if (node.type === 'property' && node.children && node.children.length >= 1) {
+      const keyNode = node.children[0];
+      if (keyNode.type === 'string') {
+        return keyNode.value as string;
+      }
+    }
+
+    // If we're on the key node directly
+    if (node.type === 'string' && node.parent?.type === 'property') {
+      return node.value as string;
+    }
+
+    return null;
   }
 
   /**
@@ -295,6 +383,218 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
     modifiedText = jsonc.applyEdits(modifiedText, removeEdits);
 
     // Apply as a single replace edit
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to move root-only settings from folder settings to root settings
+   */
+  private createMoveToRootSettingsEdit(
+    document: vscode.TextDocument,
+    diagnostics: vscode.Diagnostic[]
+  ): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode || diagnostics.length === 0) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+    let modifiedText = text;
+
+    for (const diagnostic of diagnostics) {
+      const offset = document.offsetAt(diagnostic.range.start);
+      const folderIndex = this.findFolderIndexAtOffset(rootNode, offset);
+      if (folderIndex === -1) continue;
+
+      // Find the property node at this location
+      const currentRootNode = jsonc.parseTree(modifiedText);
+      if (!currentRootNode) continue;
+
+      const folderSettingsNode = jsonc.findNodeAtLocation(currentRootNode, [
+        'folders',
+        folderIndex,
+        'settings',
+      ]);
+      if (!folderSettingsNode || !folderSettingsNode.children) continue;
+
+      // Find settings to move (root-only settings)
+      for (const child of folderSettingsNode.children) {
+        if (child.type !== 'property' || !child.children || child.children.length < 2) continue;
+
+        const keyNode = child.children[0];
+        const valueNode = child.children[1];
+
+        if (keyNode.type !== 'string') continue;
+        const key = keyNode.value as string;
+
+        // Check if this is a root-only setting
+        if (
+          key === SETTINGS_KEYS.autoSyncEnabled ||
+          key === SETTINGS_KEYS.syncEnabled ||
+          key === SETTINGS_KEYS.syncRootSettingsExclude ||
+          key === SETTINGS_KEYS.syncSubFolderSettingsDefaults
+        ) {
+          const value = jsonc.getNodeValue(valueNode);
+
+          // Add to root settings
+          const addEdits = jsonc.modify(modifiedText, ['settings', key], value, {
+            formattingOptions,
+          });
+          modifiedText = jsonc.applyEdits(modifiedText, addEdits);
+
+          // Remove from folder settings
+          const removeEdits = jsonc.modify(
+            modifiedText,
+            ['folders', folderIndex, 'settings', key],
+            undefined,
+            { formattingOptions }
+          );
+          modifiedText = jsonc.applyEdits(modifiedText, removeEdits);
+        }
+      }
+    }
+
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to remove a workspaceManager.* setting from subFolderSettings.defaults
+   */
+  private createRemoveFromDefaultsEdit(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic
+  ): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+    const settingKey = this.extractSettingKeyFromRange(document, diagnostic.range);
+
+    if (!settingKey) {
+      return edit;
+    }
+
+    // Remove the setting from subFolderSettings.defaults
+    const edits = jsonc.modify(
+      text,
+      ['settings', SETTINGS_KEYS.syncSubFolderSettingsDefaults, settingKey],
+      undefined,
+      { formattingOptions }
+    );
+    const modifiedText = jsonc.applyEdits(text, edits);
+
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to remove reverseSync exclude patterns
+   */
+  private createRemoveExcludePatternsEdit(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic
+  ): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+    const offset = document.offsetAt(diagnostic.range.start);
+
+    // Check if this is in root settings or folder settings
+    const folderIndex = this.findFolderIndexAtOffset(rootNode, offset);
+
+    let modifiedText = text;
+
+    if (folderIndex === -1) {
+      // Root level - remove from root settings
+      const edits = jsonc.modify(
+        modifiedText,
+        ['settings', SETTINGS_KEYS.reverseSyncFolderSettingsExclude],
+        undefined,
+        { formattingOptions }
+      );
+      modifiedText = jsonc.applyEdits(modifiedText, edits);
+    } else {
+      // Folder level - remove from folder settings
+      const edits = jsonc.modify(
+        modifiedText,
+        ['folders', folderIndex, 'settings', SETTINGS_KEYS.reverseSyncFolderSettingsExclude],
+        undefined,
+        { formattingOptions }
+      );
+      modifiedText = jsonc.applyEdits(modifiedText, edits);
+    }
+
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to enable reverseSync
+   */
+  private createEnableReverseSyncEdit(
+    document: vscode.TextDocument,
+    diagnostic: vscode.Diagnostic
+  ): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+    const offset = document.offsetAt(diagnostic.range.start);
+
+    // Check if this is in root settings or folder settings
+    const folderIndex = this.findFolderIndexAtOffset(rootNode, offset);
+
+    let modifiedText = text;
+
+    if (folderIndex === -1) {
+      // Root level - enable reverseSync in root settings
+      const edits = jsonc.modify(
+        modifiedText,
+        ['settings', SETTINGS_KEYS.reverseSyncEnabled],
+        true,
+        { formattingOptions }
+      );
+      modifiedText = jsonc.applyEdits(modifiedText, edits);
+    } else {
+      // Folder level - enable reverseSync in folder settings
+      const edits = jsonc.modify(
+        modifiedText,
+        ['folders', folderIndex, 'settings', SETTINGS_KEYS.reverseSyncEnabled],
+        true,
+        { formattingOptions }
+      );
+      modifiedText = jsonc.applyEdits(modifiedText, edits);
+    }
+
     const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
     edit.replace(document.uri, fullRange, modifiedText);
 

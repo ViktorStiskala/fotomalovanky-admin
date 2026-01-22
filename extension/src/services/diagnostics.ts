@@ -8,6 +8,18 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as jsonc from 'jsonc-parser';
 import { WorkspaceConfigService } from './workspaceConfig';
+import { SETTINGS_KEYS, WORKSPACE_MANAGER_PREFIX } from '../types';
+import { getQuickFixHint } from '../utils/quickFixHint';
+
+/**
+ * Settings that only work at root level (scope: window)
+ */
+const ROOT_ONLY_SETTINGS = [
+  SETTINGS_KEYS.autoSyncEnabled,
+  SETTINGS_KEYS.syncEnabled,
+  SETTINGS_KEYS.syncRootSettingsExclude,
+  SETTINGS_KEYS.syncSubFolderSettingsDefaults,
+];
 
 export class DiagnosticsService {
   private diagnosticCollection: vscode.DiagnosticCollection;
@@ -65,11 +77,30 @@ export class DiagnosticsService {
       return diagnostics;
     }
 
+    // Get the Quick Fix hint
+    const quickFixHint = getQuickFixHint();
+
     // Find the folders array
     const foldersNode = jsonc.findNodeAtLocation(rootNode, ['folders']);
     if (!foldersNode || !foldersNode.children) {
       return diagnostics;
     }
+
+    // Parse workspace settings for later checks
+    const workspaceData = jsonc.parse(text) as {
+      folders?: Array<{ path: string; settings?: Record<string, unknown> }>;
+      settings?: Record<string, unknown>;
+    };
+    const rootSettings = workspaceData?.settings ?? {};
+
+    // Check for workspaceManager.* settings in subFolderSettings.defaults (Error)
+    this.checkWmSettingsInDefaults(rootNode, text, diagnostics, quickFixHint);
+
+    // Check for autoSync enabled with forward sync disabled (Hint)
+    this.checkAutoSyncWithForwardDisabled(rootNode, text, workspaceData, diagnostics);
+
+    // Check for reverseSync exclude patterns when reverseSync is disabled at root level
+    this.checkReverseSyncExcludeAtRoot(rootNode, text, workspaceData, diagnostics, quickFixHint);
 
     // Check each folder
     for (let i = 0; i < foldersNode.children.length; i++) {
@@ -81,6 +112,7 @@ export class DiagnosticsService {
 
       const folderPath = pathNode.value as string;
       const isRoot = await this.workspaceConfig.isWorkspaceRoot(folderPath);
+      const folderSettings = workspaceData?.folders?.[i]?.settings ?? {};
 
       // Check for flat "settings.xxx" keys on ALL folders
       const flatSettingsKeys = this.findFlatSettingsKeys(folderNode);
@@ -89,8 +121,8 @@ export class DiagnosticsService {
 
         // Different message for root folder vs non-root folder
         const message = isRoot
-          ? 'Flat settings syntax is not supported, and settings on the root folder are ignored. Use root "settings" instead. (Quick Fix available)'
-          : 'Flat settings syntax is not supported. Use a nested "settings" object instead. (Quick Fix available)';
+          ? `Flat settings syntax is not supported, and settings on the root folder are ignored. Use root "settings" instead.\n\n${quickFixHint}`
+          : `Flat settings syntax is not supported. Use a nested "settings" object instead.\n\n${quickFixHint}`;
 
         const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Hint);
         diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
@@ -106,7 +138,7 @@ export class DiagnosticsService {
           const range = this.nodeToRange(text, settingsPropertyNode);
           const diagnostic = new vscode.Diagnostic(
             range,
-            'Settings on the root folder are ignored. Use root "settings" instead. (Quick Fix available)',
+            `Settings on the root folder are ignored. Use root "settings" instead.\n\n${quickFixHint}`,
             vscode.DiagnosticSeverity.Hint
           );
           diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
@@ -115,9 +147,309 @@ export class DiagnosticsService {
           diagnostics.push(diagnostic);
         }
       }
+
+      // Check for root-only settings in folder settings (Warning)
+      this.checkRootOnlySettingsInFolder(rootNode, text, i, folderNode, diagnostics, quickFixHint);
+
+      // Check for reverseSync exclude patterns when reverseSync is disabled at folder level
+      this.checkReverseSyncExcludeInFolder(
+        rootNode,
+        text,
+        i,
+        folderSettings,
+        rootSettings,
+        diagnostics,
+        quickFixHint
+      );
     }
 
     return diagnostics;
+  }
+
+  /**
+   * Check for root-only settings placed in folder settings (Warning)
+   */
+  private checkRootOnlySettingsInFolder(
+    rootNode: jsonc.Node,
+    text: string,
+    folderIndex: number,
+    _folderNode: jsonc.Node,
+    diagnostics: vscode.Diagnostic[],
+    quickFixHint: string
+  ): void {
+    const settingsNode = jsonc.findNodeAtLocation(rootNode, ['folders', folderIndex, 'settings']);
+    if (!settingsNode || settingsNode.type !== 'object' || !settingsNode.children) {
+      return;
+    }
+
+    for (const child of settingsNode.children) {
+      if (child.type !== 'property' || !child.children || child.children.length < 1) {
+        continue;
+      }
+
+      const keyNode = child.children[0];
+      if (keyNode.type !== 'string' || typeof keyNode.value !== 'string') {
+        continue;
+      }
+
+      const key = keyNode.value;
+      if ((ROOT_ONLY_SETTINGS as readonly string[]).includes(key)) {
+        const range = this.nodeToRange(text, child);
+        const diagnostic = new vscode.Diagnostic(
+          range,
+          `This setting only works in root "settings". It has no effect here.\n\n${quickFixHint}`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        diagnostic.source = 'Workspace Manager';
+        diagnostic.code = 'root-only-setting-in-folder';
+        diagnostics.push(diagnostic);
+      }
+    }
+  }
+
+  /**
+   * Check for workspaceManager.* settings in subFolderSettings.defaults (Error)
+   */
+  private checkWmSettingsInDefaults(
+    rootNode: jsonc.Node,
+    text: string,
+    diagnostics: vscode.Diagnostic[],
+    quickFixHint: string
+  ): void {
+    const defaultsNode = jsonc.findNodeAtLocation(rootNode, [
+      'settings',
+      SETTINGS_KEYS.syncSubFolderSettingsDefaults,
+    ]);
+    if (!defaultsNode || defaultsNode.type !== 'object' || !defaultsNode.children) {
+      return;
+    }
+
+    for (const child of defaultsNode.children) {
+      if (child.type !== 'property' || !child.children || child.children.length < 1) {
+        continue;
+      }
+
+      const keyNode = child.children[0];
+      if (keyNode.type !== 'string' || typeof keyNode.value !== 'string') {
+        continue;
+      }
+
+      const key = keyNode.value;
+      if (key.startsWith(WORKSPACE_MANAGER_PREFIX)) {
+        const range = this.nodeToRange(text, child);
+        const diagnostic = new vscode.Diagnostic(
+          range,
+          `"workspaceManager.*" settings are not allowed in subFolderSettings.defaults.\n\nPut settings directly in folders[].settings, or define "workspaceManager.reverseSync.*" options in root settings.\n\n${quickFixHint}`,
+          vscode.DiagnosticSeverity.Error
+        );
+        diagnostic.source = 'Workspace Manager';
+        diagnostic.code = 'wm-settings-in-defaults';
+        diagnostics.push(diagnostic);
+      }
+    }
+  }
+
+  /**
+   * Check for autoSync enabled with forward sync disabled (Hint)
+   */
+  private checkAutoSyncWithForwardDisabled(
+    rootNode: jsonc.Node,
+    text: string,
+    workspaceData: {
+      folders?: Array<{ path: string; settings?: Record<string, unknown> }>;
+      settings?: Record<string, unknown>;
+    },
+    diagnostics: vscode.Diagnostic[]
+  ): void {
+    const rootSettings = workspaceData?.settings ?? {};
+    const autoSyncEnabled = rootSettings[SETTINGS_KEYS.autoSyncEnabled] === true;
+    const forwardSyncEnabled = rootSettings[SETTINGS_KEYS.syncEnabled] !== false;
+
+    if (!autoSyncEnabled || forwardSyncEnabled) {
+      return; // No issue
+    }
+
+    // Forward sync is disabled while autoSync is enabled
+    const autoSyncNode = jsonc.findNodeAtLocation(rootNode, [
+      'settings',
+      SETTINGS_KEYS.autoSyncEnabled,
+    ]);
+    if (!autoSyncNode) {
+      return;
+    }
+
+    // Find the property node (parent of the value node)
+    const settingsNode = jsonc.findNodeAtLocation(rootNode, ['settings']);
+    if (!settingsNode || !settingsNode.children) {
+      return;
+    }
+
+    const autoSyncPropertyNode = this.findPropertyNode(settingsNode, SETTINGS_KEYS.autoSyncEnabled);
+    if (!autoSyncPropertyNode) {
+      return;
+    }
+
+    // Check if ALL folders have reverseSync disabled
+    const allReverseSyncDisabled = this.checkAllFoldersReverseSyncDisabled(workspaceData);
+
+    const range = this.nodeToRange(text, autoSyncPropertyNode);
+    let message: string;
+
+    if (allReverseSyncDisabled) {
+      message = 'Auto-Sync will have no effect, as both forwardSync and reverseSync are disabled.';
+    } else {
+      message =
+        'Forward sync is disabled.\n\nAuto-Sync will only sync folder setting changes to Workspace.';
+    }
+
+    const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Hint);
+    diagnostic.source = 'Workspace Manager';
+    diagnostic.code = 'autosync-forward-disabled';
+    diagnostics.push(diagnostic);
+  }
+
+  /**
+   * Check if ALL folders have reverseSync effectively disabled
+   */
+  private checkAllFoldersReverseSyncDisabled(workspaceData: {
+    folders?: Array<{ path: string; settings?: Record<string, unknown> }>;
+    settings?: Record<string, unknown>;
+  }): boolean {
+    const rootSettings = workspaceData?.settings ?? {};
+    const rootReverseSyncEnabled = rootSettings[SETTINGS_KEYS.reverseSyncEnabled] !== false;
+    const folders = workspaceData?.folders ?? [];
+
+    if (folders.length === 0) {
+      return !rootReverseSyncEnabled;
+    }
+
+    for (const folder of folders) {
+      const folderReverseSyncEnabled = folder.settings?.[SETTINGS_KEYS.reverseSyncEnabled];
+      // Folder is enabled if: explicit true, OR undefined and root is enabled
+      const isEnabled = folderReverseSyncEnabled ?? rootReverseSyncEnabled;
+      if (isEnabled) {
+        return false; // At least one folder has reverseSync enabled
+      }
+    }
+
+    return true; // All folders have reverseSync disabled
+  }
+
+  /**
+   * Check for reverseSync exclude patterns at root level when all folders have reverseSync disabled
+   */
+  private checkReverseSyncExcludeAtRoot(
+    rootNode: jsonc.Node,
+    text: string,
+    workspaceData: {
+      folders?: Array<{ path: string; settings?: Record<string, unknown> }>;
+      settings?: Record<string, unknown>;
+    },
+    diagnostics: vscode.Diagnostic[],
+    quickFixHint: string
+  ): void {
+    const rootSettings = workspaceData?.settings ?? {};
+    const excludePatterns = rootSettings[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as
+      | string[]
+      | undefined;
+
+    // Only check if there are actually exclude patterns defined at root
+    if (!excludePatterns || !Array.isArray(excludePatterns) || excludePatterns.length === 0) {
+      return;
+    }
+
+    // Only show diagnostic if ALL folders have reverseSync disabled
+    // (because root patterns ARE used if any folder has reverseSync enabled)
+    if (!this.checkAllFoldersReverseSyncDisabled(workspaceData)) {
+      return;
+    }
+
+    const settingsNode = jsonc.findNodeAtLocation(rootNode, ['settings']);
+    if (!settingsNode) {
+      return;
+    }
+
+    const excludePropertyNode = this.findPropertyNode(
+      settingsNode,
+      SETTINGS_KEYS.reverseSyncFolderSettingsExclude
+    );
+    if (!excludePropertyNode) {
+      return;
+    }
+
+    const range = this.nodeToRange(text, excludePropertyNode);
+    const diagnostic = new vscode.Diagnostic(
+      range,
+      `Exclude patterns have no effect because reverse sync is disabled.\n\n${quickFixHint}`,
+      vscode.DiagnosticSeverity.Hint
+    );
+    diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
+    diagnostic.source = 'Workspace Manager';
+    diagnostic.code = 'reverse-exclude-when-disabled';
+    diagnostics.push(diagnostic);
+  }
+
+  /**
+   * Check for reverseSync exclude patterns in folder settings when that folder has reverseSync disabled
+   */
+  private checkReverseSyncExcludeInFolder(
+    rootNode: jsonc.Node,
+    text: string,
+    folderIndex: number,
+    folderSettings: Record<string, unknown>,
+    rootSettings: Record<string, unknown>,
+    diagnostics: vscode.Diagnostic[],
+    quickFixHint: string
+  ): void {
+    const folderExcludePatterns = folderSettings[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as
+      | string[]
+      | undefined;
+
+    // Only check if there are actually exclude patterns defined in folder
+    if (
+      !folderExcludePatterns ||
+      !Array.isArray(folderExcludePatterns) ||
+      folderExcludePatterns.length === 0
+    ) {
+      return;
+    }
+
+    // Check if this specific folder has reverseSync disabled
+    const folderReverseSyncEnabled = folderSettings[SETTINGS_KEYS.reverseSyncEnabled];
+    const rootReverseSyncEnabled = rootSettings[SETTINGS_KEYS.reverseSyncEnabled] !== false;
+    const isEnabled = folderReverseSyncEnabled ?? rootReverseSyncEnabled;
+
+    if (isEnabled) {
+      return; // reverseSync is enabled for this folder, patterns are used
+    }
+
+    const folderSettingsNode = jsonc.findNodeAtLocation(rootNode, [
+      'folders',
+      folderIndex,
+      'settings',
+    ]);
+    if (!folderSettingsNode) {
+      return;
+    }
+
+    const excludePropertyNode = this.findPropertyNode(
+      folderSettingsNode,
+      SETTINGS_KEYS.reverseSyncFolderSettingsExclude
+    );
+    if (!excludePropertyNode) {
+      return;
+    }
+
+    const range = this.nodeToRange(text, excludePropertyNode);
+    const diagnostic = new vscode.Diagnostic(
+      range,
+      `Exclude patterns have no effect because reverse sync is disabled.\n\n${quickFixHint}`,
+      vscode.DiagnosticSeverity.Hint
+    );
+    diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
+    diagnostic.source = 'Workspace Manager';
+    diagnostic.code = 'reverse-exclude-when-disabled';
+    diagnostics.push(diagnostic);
   }
 
   /**

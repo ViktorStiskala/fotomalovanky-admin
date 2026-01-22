@@ -36,12 +36,6 @@
     "configuration": {
       "title": "Workspace Manager",
       "properties": {
-        "workspaceManager.enabled": {
-          "type": "boolean",
-          "default": true,
-          "scope": "window",
-          "description": "Enable/disable Workspace Manager"
-        },
         "workspaceManager.autoSync.enabled": {
           "type": "boolean",
           "default": false,

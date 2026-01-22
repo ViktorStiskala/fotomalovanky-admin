@@ -11,7 +11,8 @@ import { ReverseSyncService } from './services/reverseSync';
 import { FileWatcherService } from './services/fileWatcher';
 import { DiagnosticsService } from './services/diagnostics';
 import { WorkspaceCodeActionProvider } from './services/codeActions';
-import { SETTINGS_KEYS } from './types';
+import { SETTINGS_KEYS, type WorkspaceFile } from './types';
+import { initQuickFixHint } from './utils/quickFixHint';
 
 let outputChannel: vscode.OutputChannel;
 let statusBarItem: vscode.StatusBarItem;
@@ -38,6 +39,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   outputChannel.appendLine(`Workspace file: ${workspaceConfig.getWorkspacePath()}`);
+
+  // Initialize Quick Fix hint (cache keybinding for diagnostic messages)
+  await initQuickFixHint();
 
   // Initialize services
   forwardSync = new ForwardSyncService(workspaceConfig, outputChannel);
@@ -123,18 +127,14 @@ async function initialize(): Promise<void> {
     await diagnosticsService.validate();
 
     const workspace = await workspaceConfig.load();
-    const enabled = workspace.settings[SETTINGS_KEYS.enabled] !== false;
     const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled] === true;
-
-    if (!enabled) {
-      outputChannel.appendLine('Extension is disabled');
-      updateStatusBar(false);
-      return;
-    }
 
     if (autoSync) {
       fileWatcher.startWatching();
       updateStatusBar(true);
+
+      // Check for configuration warnings
+      await checkAutoSyncWarnings();
 
       // Perform initial forward sync
       outputChannel.appendLine('Performing initial forward sync...');
@@ -157,18 +157,14 @@ async function handleConfigurationChange(): Promise<void> {
 
   try {
     const workspace = await workspaceConfig.load();
-    const enabled = workspace.settings[SETTINGS_KEYS.enabled] !== false;
     const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled] === true;
-
-    if (!enabled) {
-      fileWatcher.stopWatching();
-      updateStatusBar(false);
-      return;
-    }
 
     if (autoSync && !fileWatcher.isActive()) {
       fileWatcher.startWatching();
       updateStatusBar(true);
+
+      // Check for configuration warnings when autoSync transitions to enabled
+      await checkAutoSyncWarnings();
     } else if (!autoSync && fileWatcher.isActive()) {
       fileWatcher.stopWatching();
       updateStatusBar(false);
@@ -176,6 +172,51 @@ async function handleConfigurationChange(): Promise<void> {
   } catch (error) {
     outputChannel.appendLine(
       `Configuration change error: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
+ * Check if ALL folders have reverseSync effectively disabled
+ */
+function checkAllFoldersReverseSyncDisabled(workspace: WorkspaceFile): boolean {
+  const rootReverseSyncEnabled = workspace.settings[SETTINGS_KEYS.reverseSyncEnabled] !== false;
+
+  for (const folder of workspace.folders) {
+    const folderReverseSyncEnabled = folder.settings?.[SETTINGS_KEYS.reverseSyncEnabled];
+    // Folder is enabled if: explicit true, OR undefined and root is enabled
+    const isEnabled = folderReverseSyncEnabled ?? rootReverseSyncEnabled;
+    if (isEnabled) {
+      return false; // At least one folder has reverseSync enabled
+    }
+  }
+
+  return true; // All folders have reverseSync disabled
+}
+
+/**
+ * Check configuration and show warning when enabling autoSync with issues
+ */
+async function checkAutoSyncWarnings(): Promise<void> {
+  try {
+    const workspace = await workspaceConfig.load();
+    const forwardSyncEnabled = workspace.settings[SETTINGS_KEYS.syncEnabled] !== false;
+    const allReverseSyncDisabled = checkAllFoldersReverseSyncDisabled(workspace);
+
+    if (!forwardSyncEnabled && allReverseSyncDisabled) {
+      // Both disabled - no effect
+      vscode.window.showWarningMessage(
+        'Auto-Sync will have no effect, as both forwardSync and reverseSync are disabled.'
+      );
+    } else if (!forwardSyncEnabled) {
+      // Forward disabled, some reverseSync works
+      vscode.window.showWarningMessage(
+        'Forward sync is disabled.\n\nAuto-Sync will only sync folder setting changes to Workspace.'
+      );
+    }
+  } catch (error) {
+    outputChannel.appendLine(
+      `Check auto-sync warnings error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
 }
@@ -275,6 +316,9 @@ async function handleEnableAutoSync(): Promise<void> {
     updateStatusBar(true);
 
     vscode.window.showInformationMessage('Workspace Manager: Auto-sync enabled');
+
+    // Check for configuration warnings after enabling
+    await checkAutoSyncWarnings();
   } catch (error) {
     outputChannel.appendLine(
       `Enable auto-sync error: ${error instanceof Error ? error.message : String(error)}`

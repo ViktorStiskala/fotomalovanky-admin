@@ -80,7 +80,6 @@ All settings are available in **Settings → Workspace → Extensions → Worksp
 
 | Setting                                               | Default | Where           | Precedence                 | Description                                                    |
 | ----------------------------------------------------- | ------- | --------------- | -------------------------- | -------------------------------------------------------------- |
-| `workspaceManager.enabled`                            | `true`  | Root only       | Root → Default             | Master toggle for the extension                                |
 | `workspaceManager.autoSync.enabled`                   | `false` | Root only       | Root → Default             | Enable automatic sync via file watchers                        |
 | `workspaceManager.sync.enabled`                       | `true`  | Root only       | Root → Default             | Enable forward sync                                            |
 | `workspaceManager.sync.rootSettings.exclude`          | `[]`    | Root only       | Root → Default             | Patterns to NOT inherit from root (folders can still add them) |
@@ -194,9 +193,9 @@ View detailed logs in **Output → Workspace Manager** panel.
 
 ## Diagnostics & Quick Fixes
 
-The extension shows hints for common workspace configuration issues:
+The extension detects common workspace configuration issues and offers Quick Fixes. Press `Cmd+.` (macOS) or `Ctrl+.` (Windows/Linux) when on a highlighted issue to see available fixes.
 
-### Flat Settings Syntax
+### Flat Settings Syntax (Hint)
 
 If you write settings using the flat `"settings.xxx"` syntax directly on a folder object:
 
@@ -220,11 +219,80 @@ The extension will show a faded hint and offer a quick fix to move it to the pro
 }
 ```
 
-### Root Folder Settings
+### Root Folder Settings (Hint)
 
 If you add a `settings` object to the folder entry that represents the workspace root (e.g., `"path": "."`), those settings are ignored by VS Code. The extension will show a hint and offer to move them to the root `settings` object.
 
-Both diagnostics appear as faded text (like unused code) to indicate that the settings are being ignored, not that they're breaking errors. Click on the lightbulb or press `Cmd+.` to apply the quick fix.
+### Root-Only Settings in Folder (Warning)
+
+Some `workspaceManager.*` settings only work at the root level:
+
+- `workspaceManager.autoSync.enabled`
+- `workspaceManager.sync.enabled`
+- `workspaceManager.sync.rootSettings.exclude`
+- `workspaceManager.sync.subFolderSettings.defaults`
+
+If these are placed in `folders[].settings`, they have no effect:
+
+```json
+{
+  "folders": [
+    {
+      "path": "backend",
+      "settings": {
+        "workspaceManager.sync.enabled": false // Warning: no effect here!
+      }
+    }
+  ]
+}
+```
+
+**Quick Fix:** Move to root settings
+
+### workspaceManager Settings in Defaults (Error)
+
+You cannot use `workspaceManager.*` settings inside `subFolderSettings.defaults`:
+
+```json
+{
+  "settings": {
+    "workspaceManager.sync.subFolderSettings.defaults": {
+      "workspaceManager.reverseSync.enabled": false // Error!
+    }
+  }
+}
+```
+
+These settings are stripped before writing to `.vscode/settings.json` files. Instead, put `workspaceManager.*` settings directly in `folders[].settings` or root `settings`.
+
+**Quick Fix:** Remove the setting
+
+### Auto-Sync with Forward Sync Disabled (Hint)
+
+When `autoSync.enabled` is true but `sync.enabled` is false, forward sync won't run. The extension shows a hint on `autoSync.enabled`:
+
+- If some folders have reverseSync enabled: "Auto-Sync will only sync folder setting changes to Workspace."
+- If all folders have reverseSync disabled: "Auto-Sync will have no effect."
+
+### Reverse Sync Exclude Patterns Unused (Hint)
+
+If you define `reverseSync.folderSettings.exclude` patterns but reverseSync is disabled, the patterns have no effect:
+
+```json
+{
+  "settings": {
+    "workspaceManager.reverseSync.enabled": false,
+    "workspaceManager.reverseSync.folderSettings.exclude": ["editor.*"] // Unused!
+  }
+}
+```
+
+**Quick Fixes:**
+
+1. Remove the exclude patterns
+2. Enable reverseSync
+
+**Note:** Root-level exclude patterns ARE used if any folder enables reverseSync (patterns are merged).
 
 ## Deep Merge Behavior
 

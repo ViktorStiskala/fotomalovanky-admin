@@ -33,12 +33,6 @@ export class ForwardSyncService {
     const workspace = await this.workspaceConfig.load();
     const globalSettings = workspace.settings;
 
-    // Check if extension is enabled
-    if (globalSettings[SETTINGS_KEYS.enabled] === false) {
-      this.outputChannel.appendLine('Forward sync skipped: extension disabled');
-      return 0;
-    }
-
     // Check if forward sync is enabled
     if (globalSettings[SETTINGS_KEYS.syncEnabled] === false) {
       this.outputChannel.appendLine('Forward sync skipped: sync.enabled is false');

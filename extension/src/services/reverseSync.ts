@@ -52,12 +52,6 @@ export class ReverseSyncService {
         return false;
       }
 
-      // Check if extension is enabled
-      if (workspace.settings[SETTINGS_KEYS.enabled] === false) {
-        this.outputChannel.appendLine('Reverse sync skipped: extension disabled');
-        return false;
-      }
-
       // Check if reverse sync is enabled (folder setting has precedence over root)
       const folderReverseSyncEnabled = folder.settings?.[SETTINGS_KEYS.reverseSyncEnabled];
       const rootReverseSyncEnabled = workspace.settings[SETTINGS_KEYS.reverseSyncEnabled];

@@ -28,8 +28,6 @@ export interface WorkspaceFile {
  * Extension settings (workspaceManager.*)
  */
 export interface ExtensionSettings {
-  /** Master toggle for the extension */
-  enabled: boolean;
   /** Enable automatic sync via file watchers */
   autoSync: boolean;
   /** Forward sync settings */
@@ -52,7 +50,6 @@ export interface ExtensionSettings {
  * Default extension settings
  */
 export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
-  enabled: true,
   autoSync: false,
   sync: {
     enabled: true,
@@ -68,7 +65,6 @@ export const DEFAULT_EXTENSION_SETTINGS: ExtensionSettings = {
  * Settings keys for the extension configuration
  */
 export const SETTINGS_KEYS = {
-  enabled: 'workspaceManager.enabled',
   autoSyncEnabled: 'workspaceManager.autoSync.enabled',
   syncEnabled: 'workspaceManager.sync.enabled',
   syncRootSettingsExclude: 'workspaceManager.sync.rootSettings.exclude',

@@ -255,13 +255,7 @@ export class FileWatcherService {
   private async isAutoSyncEnabled(): Promise<boolean> {
     try {
       const workspace = await this.workspaceConfig.load();
-      const enabled = workspace.settings[SETTINGS_KEYS.enabled];
       const autoSync = workspace.settings[SETTINGS_KEYS.autoSyncEnabled];
-
-      if (enabled === false) {
-        return false;
-      }
-
       return autoSync === true;
     } catch {
       return false; // Default to disabled
