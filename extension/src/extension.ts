@@ -88,6 +88,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // Listen for workspace file document changes to refresh diagnostics immediately
+  // This ensures diagnostics update when edits are applied (before file is saved)
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      const workspacePath = workspaceConfig.getWorkspacePath();
+      if (workspacePath && e.document.uri.fsPath === workspacePath) {
+        // Debounce diagnostics refresh
+        diagnosticsService.validate();
+      }
+    })
+  );
+
   // Initialize based on current settings
   await initialize();
 
@@ -197,7 +209,7 @@ async function handleSyncForward(): Promise<void> {
         `Workspace Manager: Synced settings to ${count} folder(s)`
       );
     } else {
-      vscode.window.showInformationMessage('Workspace Manager: No folders to sync');
+      vscode.window.showInformationMessage('Workspace Manager: Settings already up to date');
     }
   } catch (error) {
     outputChannel.appendLine(

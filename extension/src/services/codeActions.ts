@@ -13,6 +13,27 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
 
   constructor(private workspaceConfig: WorkspaceConfigService) {}
 
+  /**
+   * Detect the indentation style used in the document
+   */
+  private detectIndentationStyle(text: string): jsonc.FormattingOptions {
+    // Find the first indented line to detect tab vs spaces
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if (line.startsWith('\t')) {
+        return { tabSize: 1, insertSpaces: false };
+      }
+      const match = line.match(/^( +)/);
+      if (match) {
+        // Detect tab size from the indentation
+        const spaces = match[1].length;
+        return { tabSize: spaces, insertSpaces: true };
+      }
+    }
+    // Default to tabs (common for workspace files)
+    return { tabSize: 1, insertSpaces: false };
+  }
+
   async provideCodeActions(
     document: vscode.TextDocument,
     _range: vscode.Range,
@@ -111,7 +132,10 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
   }
 
   /**
-   * Create edit to move flat settings.xxx keys to the appropriate settings object
+   * Create edit to move ALL flat settings.xxx keys to the appropriate settings object
+   *
+   * Collects ALL flat settings from the folder (not just from diagnostics),
+   * moves them all to the nested settings object, then removes them all.
    */
   private createFlatSettingsEdit(
     document: vscode.TextDocument,
@@ -126,6 +150,9 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       return edit;
     }
 
+    // Detect indentation style from the document
+    const formattingOptions = this.detectIndentationStyle(text);
+
     // Find the folder index from the first diagnostic
     const firstDiagnosticOffset = document.offsetAt(diagnostics[0].range.start);
     const folderIndex = this.findFolderIndexAtOffset(rootNode, firstDiagnosticOffset);
@@ -133,30 +160,33 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       return edit;
     }
 
-    // Collect all flat settings keys and values from diagnostics
-    const settingsToMove: Array<{ key: string; value: unknown }> = [];
+    // Collect ALL flat settings keys from the folder (not just from diagnostics)
+    const settingsToMove: Array<{ key: string; value: unknown; originalKey: string }> = [];
 
-    for (const diagnostic of diagnostics) {
-      const offset = document.offsetAt(diagnostic.range.start);
-      const node = jsonc.findNodeAtOffset(rootNode, offset);
+    const foldersNode = jsonc.findNodeAtLocation(rootNode, ['folders']);
+    const folderNode = foldersNode?.children?.[folderIndex];
 
-      // Navigate to the property node
-      let propertyNode = node;
-      while (propertyNode && propertyNode.type !== 'property') {
-        propertyNode = propertyNode.parent;
-      }
+    if (folderNode?.type === 'object' && folderNode.children) {
+      for (const child of folderNode.children) {
+        if (child.type === 'property' && child.children?.length === 2) {
+          const keyNode = child.children[0];
+          const valueNode = child.children[1];
 
-      if (propertyNode?.type === 'property' && propertyNode.children?.length === 2) {
-        const keyNode = propertyNode.children[0];
-        const valueNode = propertyNode.children[1];
-
-        if (keyNode.type === 'string' && keyNode.value?.startsWith?.('settings.')) {
-          // Remove "settings." prefix to get the actual setting key
-          const actualKey = (keyNode.value as string).substring('settings.'.length);
-          settingsToMove.push({
-            key: actualKey,
-            value: jsonc.getNodeValue(valueNode),
-          });
+          if (
+            keyNode.type === 'string' &&
+            typeof keyNode.value === 'string' &&
+            keyNode.value.startsWith('settings.') &&
+            keyNode.value.length > 'settings.'.length
+          ) {
+            // Remove "settings." prefix to get the actual setting key
+            const originalKey = keyNode.value;
+            const actualKey = keyNode.value.substring('settings.'.length);
+            settingsToMove.push({
+              key: actualKey,
+              value: jsonc.getNodeValue(valueNode),
+              originalKey,
+            });
+          }
         }
       }
     }
@@ -165,10 +195,10 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       return edit;
     }
 
-    // Build edits: remove flat keys and add to settings object
+    // Build edits: add to settings object, then remove flat keys
     let modifiedText = text;
 
-    // First, add settings to the target location
+    // First, add ALL settings to the target location
     for (const { key, value } of settingsToMove) {
       let targetPath: jsonc.JSONPath;
 
@@ -180,37 +210,19 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
         targetPath = ['folders', folderIndex, 'settings', key];
       }
 
-      const edits = jsonc.modify(modifiedText, targetPath, value, {
-        formattingOptions: { tabSize: 2, insertSpaces: true },
-      });
+      const edits = jsonc.modify(modifiedText, targetPath, value, { formattingOptions });
       modifiedText = jsonc.applyEdits(modifiedText, edits);
     }
 
-    // Then remove the flat settings keys
-    // Re-parse after modifications
-    const updatedRoot = jsonc.parseTree(modifiedText);
-    if (updatedRoot) {
-      const foldersNode = jsonc.findNodeAtLocation(updatedRoot, ['folders']);
-      if (foldersNode?.children?.[folderIndex]) {
-        const folderNode = foldersNode.children[folderIndex];
-        if (folderNode.type === 'object' && folderNode.children) {
-          // Find and remove all settings.xxx properties
-          for (const child of folderNode.children) {
-            if (child.type === 'property' && child.children?.[0]) {
-              const keyNode = child.children[0];
-              if (keyNode.type === 'string' && keyNode.value?.startsWith?.('settings.')) {
-                const edits = jsonc.modify(
-                  modifiedText,
-                  ['folders', folderIndex, keyNode.value as string],
-                  undefined, // undefined removes the key
-                  { formattingOptions: { tabSize: 2, insertSpaces: true } }
-                );
-                modifiedText = jsonc.applyEdits(modifiedText, edits);
-              }
-            }
-          }
-        }
-      }
+    // Then remove ALL the flat settings keys we collected
+    for (const { originalKey } of settingsToMove) {
+      const edits = jsonc.modify(
+        modifiedText,
+        ['folders', folderIndex, originalKey],
+        undefined, // undefined removes the key
+        { formattingOptions }
+      );
+      modifiedText = jsonc.applyEdits(modifiedText, edits);
     }
 
     // Apply as a single replace edit
@@ -234,6 +246,9 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
     if (!rootNode || diagnostics.length === 0) {
       return edit;
     }
+
+    // Detect indentation style from the document
+    const formattingOptions = this.detectIndentationStyle(text);
 
     // Find the folder index from the first diagnostic
     const firstDiagnosticOffset = document.offsetAt(diagnostics[0].range.start);
@@ -266,9 +281,7 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
         continue;
       }
 
-      const edits = jsonc.modify(modifiedText, ['settings', key], value, {
-        formattingOptions: { tabSize: 2, insertSpaces: true },
-      });
+      const edits = jsonc.modify(modifiedText, ['settings', key], value, { formattingOptions });
       modifiedText = jsonc.applyEdits(modifiedText, edits);
     }
 
@@ -277,7 +290,7 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       modifiedText,
       ['folders', folderIndex, 'settings'],
       undefined,
-      { formattingOptions: { tabSize: 2, insertSpaces: true } }
+      { formattingOptions }
     );
     modifiedText = jsonc.applyEdits(modifiedText, removeEdits);
 

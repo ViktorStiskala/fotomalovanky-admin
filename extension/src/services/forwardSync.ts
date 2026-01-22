@@ -78,13 +78,15 @@ export class ForwardSyncService {
         // 5. Remove any remaining workspaceManager.* keys and write
         const cleaned = this.removeWorkspaceManagerKeys(merged);
 
-        // Write to .vscode/settings.json
-        await this.writeSettingsJson(folder.path, cleaned);
+        // Write to .vscode/settings.json (only if changed)
+        const wasChanged = await this.writeSettingsJson(folder.path, cleaned);
 
-        this.outputChannel.appendLine(
-          `Synced settings to ${folder.name || folder.path}/.vscode/settings.json`
-        );
-        syncedCount++;
+        if (wasChanged) {
+          this.outputChannel.appendLine(
+            `Synced settings to ${folder.name || folder.path}/.vscode/settings.json`
+          );
+          syncedCount++;
+        }
       } catch (error) {
         this.outputChannel.appendLine(
           `Error syncing ${folder.name || folder.path}: ${error instanceof Error ? error.message : String(error)}`
@@ -130,17 +132,32 @@ export class ForwardSyncService {
 
   /**
    * Write settings to a folder's .vscode/settings.json
+   *
+   * @returns true if the file was changed, false if content was identical
    */
-  private async writeSettingsJson(folderPath: string, settings: Settings): Promise<void> {
+  private async writeSettingsJson(folderPath: string, settings: Settings): Promise<boolean> {
     const resolvedPath = await this.workspaceConfig.resolveFolderPath(folderPath);
     const vscodeDir = path.join(resolvedPath, '.vscode');
     const settingsFile = path.join(vscodeDir, 'settings.json');
 
+    // Write settings.json with proper formatting
+    const newContent = JSON.stringify(settings, null, 4) + '\n';
+
+    // Check if file exists and has the same content
+    try {
+      const existingContent = await fs.readFile(settingsFile, 'utf-8');
+      if (existingContent === newContent) {
+        return false; // No change needed
+      }
+    } catch {
+      // File doesn't exist, will be created
+    }
+
     // Create .vscode directory if it doesn't exist
     await fs.mkdir(vscodeDir, { recursive: true });
 
-    // Write settings.json with proper formatting
-    const content = JSON.stringify(settings, null, 4) + '\n';
-    await fs.writeFile(settingsFile, content, 'utf-8');
+    // Write the new content
+    await fs.writeFile(settingsFile, newContent, 'utf-8');
+    return true;
   }
 }

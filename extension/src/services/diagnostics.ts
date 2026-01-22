@@ -52,7 +52,13 @@ export class DiagnosticsService {
   private async collectDiagnostics(workspacePath: string): Promise<vscode.Diagnostic[]> {
     const diagnostics: vscode.Diagnostic[] = [];
 
-    const text = await fs.readFile(workspacePath, 'utf-8');
+    // Prefer reading from the open document (if any) to get in-memory changes
+    // This ensures diagnostics update immediately when edits are applied
+    const uri = vscode.Uri.file(workspacePath);
+    const openDocument = vscode.workspace.textDocuments.find(
+      (doc) => doc.uri.toString() === uri.toString()
+    );
+    const text = openDocument ? openDocument.getText() : await fs.readFile(workspacePath, 'utf-8');
     const rootNode = jsonc.parseTree(text);
 
     if (!rootNode) {
@@ -80,11 +86,13 @@ export class DiagnosticsService {
       const flatSettingsKeys = this.findFlatSettingsKeys(folderNode);
       for (const propertyNode of flatSettingsKeys) {
         const range = this.nodeToRange(text, propertyNode);
-        const diagnostic = new vscode.Diagnostic(
-          range,
-          'Flat settings syntax is not supported. Use a nested "settings" object instead.',
-          vscode.DiagnosticSeverity.Hint
-        );
+
+        // Different message for root folder vs non-root folder
+        const message = isRoot
+          ? 'Flat settings syntax is not supported, and settings on the root folder are ignored. Use root "settings" instead. (Quick Fix available)'
+          : 'Flat settings syntax is not supported. Use a nested "settings" object instead. (Quick Fix available)';
+
+        const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Hint);
         diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
         diagnostic.source = 'Workspace Manager';
         diagnostic.code = 'flat-settings';
@@ -98,7 +106,7 @@ export class DiagnosticsService {
           const range = this.nodeToRange(text, settingsPropertyNode);
           const diagnostic = new vscode.Diagnostic(
             range,
-            'Settings on the root folder are ignored. Use root "settings" instead.',
+            'Settings on the root folder are ignored. Use root "settings" instead. (Quick Fix available)',
             vscode.DiagnosticSeverity.Hint
           );
           diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
@@ -137,7 +145,14 @@ export class DiagnosticsService {
   /**
    * Find all flat settings keys (e.g., "settings.editor.fontSize") in a folder object
    *
-   * Returns property nodes for keys that start with "settings."
+   * Only matches keys that:
+   * 1. Are direct children of the folder object (not nested)
+   * 2. Start with exactly "settings." (with the dot)
+   *
+   * Does NOT match:
+   * - "settings" (the nested settings object itself)
+   * - Keys inside the "settings" object
+   * - Keys like "generator.settings" that contain but don't start with "settings."
    */
   private findFlatSettingsKeys(folderNode: jsonc.Node): jsonc.Node[] {
     const result: jsonc.Node[] = [];
@@ -146,11 +161,21 @@ export class DiagnosticsService {
     }
 
     for (const child of folderNode.children) {
-      if (child.type === 'property' && child.children?.[0]) {
-        const keyNode = child.children[0];
-        if (keyNode.type === 'string' && keyNode.value?.startsWith?.('settings.')) {
-          result.push(child);
-        }
+      // Only check property nodes that are direct children
+      if (child.type !== 'property' || !child.children || child.children.length < 1) {
+        continue;
+      }
+
+      const keyNode = child.children[0];
+
+      // Ensure the key is a string and starts with "settings." (with the dot)
+      if (
+        keyNode.type === 'string' &&
+        typeof keyNode.value === 'string' &&
+        keyNode.value.startsWith('settings.') &&
+        keyNode.value.length > 'settings.'.length // Must have something after the dot
+      ) {
+        result.push(child);
       }
     }
 
