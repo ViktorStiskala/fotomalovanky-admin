@@ -56,6 +56,7 @@ class TrackedAsyncSession(AsyncSession):
     # Context validation
     _context_set: bool
     _required_context_fields: frozenset[str]
+    _extracted_context: dict[str, Any] | None  # Cached context from predicates
 
     # Event deferral state (for batching across multiple commits)
     _defer_mercure_events: bool
@@ -71,6 +72,7 @@ class TrackedAsyncSession(AsyncSession):
         self._mutated_models = set()
         self._context_set = False
         self._required_context_fields = frozenset()
+        self._extracted_context = None
 
         # Event deferral state (for batching across multiple commits)
         self._defer_mercure_events = False
@@ -129,9 +131,12 @@ class TrackedAsyncSession(AsyncSession):
         self._context_predicates.extend(predicates)
         self._context_set = True
 
+        # Invalidate cached context (will be recomputed on next access)
+        self._extracted_context = None
+
         # Validate required context is present (required fields set by decorator)
         if self._required_context_fields:
-            context = self._extract_context()
+            context = self._get_extracted_context()
             missing = self._required_context_fields - set(context.keys())
             if missing:
                 hint = ", ".join(f"{f.replace('_id', '').title()}.id == value" for f in sorted(missing))
@@ -331,6 +336,7 @@ class TrackedAsyncSession(AsyncSession):
             field=field_name,
             old_value=old_str,
             new_value=new_str,
+            **tracked_session._get_extracted_context(),
         )
         tracked_session._pending_changes.add(matching_field)
 
@@ -367,6 +373,16 @@ class TrackedAsyncSession(AsyncSession):
                         context[col_name] = val
 
         return context
+
+    def _get_extracted_context(self) -> dict[str, Any]:
+        """Get extracted context with lazy caching.
+
+        Computes context from predicates on first call, returns cached value on subsequent calls.
+        Cache is invalidated by set_mercure_context().
+        """
+        if self._extracted_context is None:
+            self._extracted_context = self._extract_context()
+        return self._extracted_context
 
     def _after_flush_postexec(self, session: Any, flush_context: Any) -> None:
         """Called after flush completes. Queue events for publishing after commit.
@@ -425,8 +441,8 @@ class TrackedAsyncSession(AsyncSession):
 
     def _schedule_event_publish(self, event_cls: type["MercureEvent"]) -> None:
         """Extract context from predicates and queue event for publishing."""
-        # Extract context directly from predicates
-        context = self._extract_context()
+        # Get cached context (computed once per set_mercure_context call)
+        context = self._get_extracted_context()
 
         # Build kwargs for event constructor
         # Map required_context attributes to context keys
