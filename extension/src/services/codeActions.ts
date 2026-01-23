@@ -136,6 +136,34 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       actions.push(enableFix);
     }
 
+    // Quick fixes for autoSync enabled but forward/reverse sync disabled
+    const autoSyncDiagnostics = context.diagnostics.filter(
+      (d) => d.code === 'autosync-forward-disabled'
+    );
+    for (const diagnostic of autoSyncDiagnostics) {
+      // Option 1: Enable forward sync
+      const enableForwardFix = new vscode.CodeAction(
+        `Set "${SETTINGS_KEYS.syncEnabled}" to "true"`,
+        vscode.CodeActionKind.QuickFix
+      );
+      enableForwardFix.diagnostics = [diagnostic];
+      enableForwardFix.edit = this.createEnableForwardSyncEdit(document);
+      enableForwardFix.isPreferred = true;
+      actions.push(enableForwardFix);
+
+      // Check if the message indicates both are disabled (offer reverseSync enable)
+      if (diagnostic.message.includes('both forwardSync and reverseSync are disabled')) {
+        // Option 2: Enable reverse sync
+        const enableReverseFix = new vscode.CodeAction(
+          `Set "${SETTINGS_KEYS.reverseSyncEnabled}" to "true"`,
+          vscode.CodeActionKind.QuickFix
+        );
+        enableReverseFix.diagnostics = [diagnostic];
+        enableReverseFix.edit = this.createEnableReverseSyncAtRootEdit(document);
+        actions.push(enableReverseFix);
+      }
+    }
+
     return actions;
   }
 
@@ -594,6 +622,58 @@ export class WorkspaceCodeActionProvider implements vscode.CodeActionProvider {
       );
       modifiedText = jsonc.applyEdits(modifiedText, edits);
     }
+
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to enable forward sync (sync.enabled = true)
+   */
+  private createEnableForwardSyncEdit(document: vscode.TextDocument): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+
+    // Enable forward sync in root settings
+    const edits = jsonc.modify(text, ['settings', SETTINGS_KEYS.syncEnabled], true, {
+      formattingOptions,
+    });
+    const modifiedText = jsonc.applyEdits(text, edits);
+
+    const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+    edit.replace(document.uri, fullRange, modifiedText);
+
+    return edit;
+  }
+
+  /**
+   * Create edit to enable reverseSync at root level
+   */
+  private createEnableReverseSyncAtRootEdit(document: vscode.TextDocument): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = document.getText();
+    const rootNode = jsonc.parseTree(text);
+
+    if (!rootNode) {
+      return edit;
+    }
+
+    const formattingOptions = this.detectIndentationStyle(text);
+
+    // Enable reverseSync in root settings
+    const edits = jsonc.modify(text, ['settings', SETTINGS_KEYS.reverseSyncEnabled], true, {
+      formattingOptions,
+    });
+    const modifiedText = jsonc.applyEdits(text, edits);
 
     const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
     edit.replace(document.uri, fullRange, modifiedText);

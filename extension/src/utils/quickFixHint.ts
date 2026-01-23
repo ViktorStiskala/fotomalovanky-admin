@@ -78,7 +78,7 @@ async function getUserKeybinding(): Promise<string | null> {
 export async function initQuickFixHint(): Promise<void> {
   const customBinding = await getUserKeybinding();
   const keybinding = formatKeybinding(customBinding ?? getDefaultKeybinding());
-  cachedHint = `**Quick Fix available:** press ${keybinding} to resolve automatically.`;
+  cachedHint = `Quick Fix available: press ${keybinding} to resolve automatically.`;
 }
 
 /**
@@ -86,7 +86,9 @@ export async function initQuickFixHint(): Promise<void> {
  *
  * Returns a formatted string suitable for appending to diagnostic messages.
  * Call initQuickFixHint() first during extension activation.
+ *
+ * Note: VS Code diagnostic messages are plain text, not markdown.
  */
 export function getQuickFixHint(): string {
-  return cachedHint ?? '**Quick Fix available** to resolve automatically.';
+  return cachedHint ?? 'Quick Fix available to resolve automatically.';
 }

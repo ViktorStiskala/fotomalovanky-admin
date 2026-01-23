@@ -94,13 +94,20 @@ export class DiagnosticsService {
     const rootSettings = workspaceData?.settings ?? {};
 
     // Check for workspaceManager.* settings in subFolderSettings.defaults (Error)
-    this.checkWmSettingsInDefaults(rootNode, text, diagnostics, quickFixHint);
+    this.checkWmSettingsInDefaults(rootNode, text, diagnostics, quickFixHint, openDocument);
 
     // Check for autoSync enabled with forward sync disabled (Hint)
-    this.checkAutoSyncWithForwardDisabled(rootNode, text, workspaceData, diagnostics);
+    this.checkAutoSyncWithForwardDisabled(rootNode, text, workspaceData, diagnostics, openDocument);
 
     // Check for reverseSync exclude patterns when reverseSync is disabled at root level
-    this.checkReverseSyncExcludeAtRoot(rootNode, text, workspaceData, diagnostics, quickFixHint);
+    this.checkReverseSyncExcludeAtRoot(
+      rootNode,
+      text,
+      workspaceData,
+      diagnostics,
+      quickFixHint,
+      openDocument
+    );
 
     // Check each folder
     for (let i = 0; i < foldersNode.children.length; i++) {
@@ -117,7 +124,7 @@ export class DiagnosticsService {
       // Check for flat "settings.xxx" keys on ALL folders
       const flatSettingsKeys = this.findFlatSettingsKeys(folderNode);
       for (const propertyNode of flatSettingsKeys) {
-        const range = this.nodeToRange(text, propertyNode);
+        const range = this.propertyToRange(text, propertyNode, openDocument);
 
         // Different message for root folder vs non-root folder
         const message = isRoot
@@ -133,9 +140,11 @@ export class DiagnosticsService {
 
       // Check for nested settings object only on ROOT folder
       if (isRoot) {
-        const settingsPropertyNode = this.findPropertyNode(folderNode, 'settings');
-        if (settingsPropertyNode) {
-          const range = this.nodeToRange(text, settingsPropertyNode);
+        // findNodeAtLocation returns the VALUE node, its parent is the property node
+        const settingsValueNode = jsonc.findNodeAtLocation(rootNode, ['folders', i, 'settings']);
+        if (settingsValueNode && settingsValueNode.parent) {
+          const settingsPropertyNode = settingsValueNode.parent;
+          const range = this.propertyToRange(text, settingsPropertyNode, openDocument);
           const diagnostic = new vscode.Diagnostic(
             range,
             `Settings on the root folder are ignored. Use root "settings" instead.\n\n${quickFixHint}`,
@@ -149,7 +158,15 @@ export class DiagnosticsService {
       }
 
       // Check for root-only settings in folder settings (Warning)
-      this.checkRootOnlySettingsInFolder(rootNode, text, i, folderNode, diagnostics, quickFixHint);
+      this.checkRootOnlySettingsInFolder(
+        rootNode,
+        text,
+        i,
+        folderNode,
+        diagnostics,
+        quickFixHint,
+        openDocument
+      );
 
       // Check for reverseSync exclude patterns when reverseSync is disabled at folder level
       this.checkReverseSyncExcludeInFolder(
@@ -159,7 +176,8 @@ export class DiagnosticsService {
         folderSettings,
         rootSettings,
         diagnostics,
-        quickFixHint
+        quickFixHint,
+        openDocument
       );
     }
 
@@ -175,7 +193,8 @@ export class DiagnosticsService {
     folderIndex: number,
     _folderNode: jsonc.Node,
     diagnostics: vscode.Diagnostic[],
-    quickFixHint: string
+    quickFixHint: string,
+    document?: vscode.TextDocument
   ): void {
     const settingsNode = jsonc.findNodeAtLocation(rootNode, ['folders', folderIndex, 'settings']);
     if (!settingsNode || settingsNode.type !== 'object' || !settingsNode.children) {
@@ -194,7 +213,7 @@ export class DiagnosticsService {
 
       const key = keyNode.value;
       if ((ROOT_ONLY_SETTINGS as readonly string[]).includes(key)) {
-        const range = this.nodeToRange(text, child);
+        const range = this.propertyToRange(text, child, document);
         const diagnostic = new vscode.Diagnostic(
           range,
           `This setting only works in root "settings". It has no effect here.\n\n${quickFixHint}`,
@@ -214,7 +233,8 @@ export class DiagnosticsService {
     rootNode: jsonc.Node,
     text: string,
     diagnostics: vscode.Diagnostic[],
-    quickFixHint: string
+    quickFixHint: string,
+    document?: vscode.TextDocument
   ): void {
     const defaultsNode = jsonc.findNodeAtLocation(rootNode, [
       'settings',
@@ -236,7 +256,7 @@ export class DiagnosticsService {
 
       const key = keyNode.value;
       if (key.startsWith(WORKSPACE_MANAGER_PREFIX)) {
-        const range = this.nodeToRange(text, child);
+        const range = this.propertyToRange(text, child, document);
         const diagnostic = new vscode.Diagnostic(
           range,
           `"workspaceManager.*" settings are not allowed in subFolderSettings.defaults.\n\nPut settings directly in folders[].settings, or define "workspaceManager.reverseSync.*" options in root settings.\n\n${quickFixHint}`,
@@ -259,7 +279,8 @@ export class DiagnosticsService {
       folders?: Array<{ path: string; settings?: Record<string, unknown> }>;
       settings?: Record<string, unknown>;
     },
-    diagnostics: vscode.Diagnostic[]
+    diagnostics: vscode.Diagnostic[],
+    document?: vscode.TextDocument
   ): void {
     const rootSettings = workspaceData?.settings ?? {};
     const autoSyncEnabled = rootSettings[SETTINGS_KEYS.autoSyncEnabled] === true;
@@ -270,29 +291,21 @@ export class DiagnosticsService {
     }
 
     // Forward sync is disabled while autoSync is enabled
-    const autoSyncNode = jsonc.findNodeAtLocation(rootNode, [
+    // findNodeAtLocation returns the VALUE node, its parent is the property node
+    const autoSyncValueNode = jsonc.findNodeAtLocation(rootNode, [
       'settings',
       SETTINGS_KEYS.autoSyncEnabled,
     ]);
-    if (!autoSyncNode) {
+    if (!autoSyncValueNode || !autoSyncValueNode.parent) {
       return;
     }
 
-    // Find the property node (parent of the value node)
-    const settingsNode = jsonc.findNodeAtLocation(rootNode, ['settings']);
-    if (!settingsNode || !settingsNode.children) {
-      return;
-    }
-
-    const autoSyncPropertyNode = this.findPropertyNode(settingsNode, SETTINGS_KEYS.autoSyncEnabled);
-    if (!autoSyncPropertyNode) {
-      return;
-    }
+    const autoSyncPropertyNode = autoSyncValueNode.parent;
 
     // Check if ALL folders have reverseSync disabled
     const allReverseSyncDisabled = this.checkAllFoldersReverseSyncDisabled(workspaceData);
 
-    const range = this.nodeToRange(text, autoSyncPropertyNode);
+    const range = this.propertyToRange(text, autoSyncPropertyNode, document);
     let message: string;
 
     if (allReverseSyncDisabled) {
@@ -303,6 +316,7 @@ export class DiagnosticsService {
     }
 
     const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Hint);
+    diagnostic.tags = [vscode.DiagnosticTag.Unnecessary];
     diagnostic.source = 'Workspace Manager';
     diagnostic.code = 'autosync-forward-disabled';
     diagnostics.push(diagnostic);
@@ -346,7 +360,8 @@ export class DiagnosticsService {
       settings?: Record<string, unknown>;
     },
     diagnostics: vscode.Diagnostic[],
-    quickFixHint: string
+    quickFixHint: string,
+    document?: vscode.TextDocument
   ): void {
     const rootSettings = workspaceData?.settings ?? {};
     const excludePatterns = rootSettings[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as
@@ -364,20 +379,17 @@ export class DiagnosticsService {
       return;
     }
 
-    const settingsNode = jsonc.findNodeAtLocation(rootNode, ['settings']);
-    if (!settingsNode) {
+    // findNodeAtLocation returns the VALUE node, its parent is the property node
+    const excludeValueNode = jsonc.findNodeAtLocation(rootNode, [
+      'settings',
+      SETTINGS_KEYS.reverseSyncFolderSettingsExclude,
+    ]);
+    if (!excludeValueNode || !excludeValueNode.parent) {
       return;
     }
 
-    const excludePropertyNode = this.findPropertyNode(
-      settingsNode,
-      SETTINGS_KEYS.reverseSyncFolderSettingsExclude
-    );
-    if (!excludePropertyNode) {
-      return;
-    }
-
-    const range = this.nodeToRange(text, excludePropertyNode);
+    const excludePropertyNode = excludeValueNode.parent;
+    const range = this.propertyToRange(text, excludePropertyNode, document);
     const diagnostic = new vscode.Diagnostic(
       range,
       `Exclude patterns have no effect because reverse sync is disabled.\n\n${quickFixHint}`,
@@ -399,7 +411,8 @@ export class DiagnosticsService {
     folderSettings: Record<string, unknown>,
     rootSettings: Record<string, unknown>,
     diagnostics: vscode.Diagnostic[],
-    quickFixHint: string
+    quickFixHint: string,
+    document?: vscode.TextDocument
   ): void {
     const folderExcludePatterns = folderSettings[SETTINGS_KEYS.reverseSyncFolderSettingsExclude] as
       | string[]
@@ -423,24 +436,19 @@ export class DiagnosticsService {
       return; // reverseSync is enabled for this folder, patterns are used
     }
 
-    const folderSettingsNode = jsonc.findNodeAtLocation(rootNode, [
+    // findNodeAtLocation returns the VALUE node, its parent is the property node
+    const excludeValueNode = jsonc.findNodeAtLocation(rootNode, [
       'folders',
       folderIndex,
       'settings',
+      SETTINGS_KEYS.reverseSyncFolderSettingsExclude,
     ]);
-    if (!folderSettingsNode) {
+    if (!excludeValueNode || !excludeValueNode.parent) {
       return;
     }
 
-    const excludePropertyNode = this.findPropertyNode(
-      folderSettingsNode,
-      SETTINGS_KEYS.reverseSyncFolderSettingsExclude
-    );
-    if (!excludePropertyNode) {
-      return;
-    }
-
-    const range = this.nodeToRange(text, excludePropertyNode);
+    const excludePropertyNode = excludeValueNode.parent;
+    const range = this.propertyToRange(text, excludePropertyNode, document);
     const diagnostic = new vscode.Diagnostic(
       range,
       `Exclude patterns have no effect because reverse sync is disabled.\n\n${quickFixHint}`,
@@ -450,28 +458,6 @@ export class DiagnosticsService {
     diagnostic.source = 'Workspace Manager';
     diagnostic.code = 'reverse-exclude-when-disabled';
     diagnostics.push(diagnostic);
-  }
-
-  /**
-   * Find a property node by key name in an object node
-   *
-   * Returns the full property node (including key and value) rather than just the value.
-   */
-  private findPropertyNode(objectNode: jsonc.Node, propertyName: string): jsonc.Node | undefined {
-    if (objectNode.type !== 'object' || !objectNode.children) {
-      return undefined;
-    }
-
-    for (const child of objectNode.children) {
-      if (child.type === 'property' && child.children && child.children.length >= 1) {
-        const keyNode = child.children[0];
-        if (keyNode.type === 'string' && keyNode.value === propertyName) {
-          return child;
-        }
-      }
-    }
-
-    return undefined;
   }
 
   /**
@@ -515,11 +501,45 @@ export class DiagnosticsService {
   }
 
   /**
-   * Convert a jsonc-parser node to a VS Code Range
+   * Convert a jsonc-parser property node to a VS Code Range
+   *
+   * For property nodes, computes range from key start to value end
+   * to ensure the full "key": value is highlighted.
+   *
+   * Note: Cursor/VS Code renders Hint severity diagnostics with only the first
+   * character highlighted, regardless of range. This is a known limitation.
    */
-  private nodeToRange(text: string, node: jsonc.Node): vscode.Range {
-    const startPos = this.offsetToPosition(text, node.offset);
-    const endPos = this.offsetToPosition(text, node.offset + node.length);
+  private propertyToRange(
+    text: string,
+    propertyNode: jsonc.Node,
+    document?: vscode.TextDocument
+  ): vscode.Range {
+    const toPosition = (offset: number): vscode.Position => {
+      if (document) {
+        return document.positionAt(offset);
+      }
+      return this.offsetToPosition(text, offset);
+    };
+
+    let startOffset: number;
+    let endOffset: number;
+
+    if (
+      propertyNode.type !== 'property' ||
+      !propertyNode.children ||
+      propertyNode.children.length < 2
+    ) {
+      startOffset = propertyNode.offset;
+      endOffset = propertyNode.offset + propertyNode.length;
+    } else {
+      const keyNode = propertyNode.children[0];
+      const valueNode = propertyNode.children[propertyNode.children.length - 1];
+      startOffset = keyNode.offset;
+      endOffset = valueNode.offset + valueNode.length;
+    }
+
+    const startPos = toPosition(startOffset);
+    const endPos = toPosition(endOffset);
     return new vscode.Range(startPos, endPos);
   }
 

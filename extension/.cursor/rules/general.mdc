@@ -1,0 +1,117 @@
+---
+description: Workspace Manager VS Code Extension development rules
+alwaysApply: true
+---
+
+# Extension Development Rules
+
+## Package Management
+
+- **MUST** use `npm` for package management
+- **MUST** run `npm run check` before committing (includes typecheck + format check)
+- Use `npm run lint:fix` to auto-fix formatting issues
+
+## Build & Test
+
+- **Build:** `npm run build` (esbuild bundler)
+- **Watch:** `npm run watch` (auto-rebuild on changes)
+- **Type check:** `npm run check-types`
+- **Test:** Press F5 in VS Code/Cursor to launch Extension Development Host
+- **Debug:** Use Shift+F5 to stop, then F5 to restart with fresh extension instance
+
+## Code Patterns
+
+### Workspace File Parsing
+
+- **MUST** use `jsonc-parser` for all workspace file reading/editing
+- Use `parseTree()` for AST-based operations (diagnostics, quick fixes)
+- Use `parse()` for simple value extraction
+- Use `modify()` + `applyEdits()` for edits that preserve formatting
+- **NEVER** use `JSON.parse()` for workspace files (they may contain comments)
+
+### Diagnostics
+
+- **MUST** set `source: 'Workspace Manager'` on all diagnostics
+- Use `DiagnosticSeverity.Error` for invalid configurations
+- Use `DiagnosticSeverity.Warning` for settings in wrong location
+- Use `DiagnosticSeverity.Hint` + `DiagnosticTag.Unnecessary` for ignored settings (faded style)
+- Include Quick Fix hint in diagnostic messages when a fix is available
+- Diagnostic codes: `flat-settings`, `root-folder-settings`, `root-only-setting-in-folder`, `wm-settings-in-defaults`, `autosync-forward-disabled`, `reverse-exclude-when-disabled`
+
+### Quick Fixes (Code Actions)
+
+- Quick Fixes only apply to the active workspace file
+- Check `document.uri === vscode.workspace.workspaceFile` before providing actions
+- Use `jsonc.modify()` with detected indentation style to preserve formatting
+- Apply all edits as a single document replace for atomicity
+
+### Settings Keys
+
+- All `workspaceManager.*` settings keys are defined in `src/types.ts` as `SETTINGS_KEYS`
+- Use `WORKSPACE_MANAGER_PREFIX` constant to check for workspaceManager settings
+- Root-only settings are: `autoSyncEnabled`, `syncEnabled`, `syncRootSettingsExclude`, `syncSubFolderSettingsDefaults`
+- Per-folder settings are: `reverseSyncEnabled`, `reverseSyncFolderSettingsExclude`
+
+## File Structure
+
+```
+src/
+├── extension.ts          # Extension entry point, activation, commands
+├── types.ts              # TypeScript interfaces and constants
+├── services/
+│   ├── workspaceConfig.ts  # Workspace file loading/saving
+│   ├── forwardSync.ts      # Workspace → .vscode/settings.json
+│   ├── reverseSync.ts      # .vscode/settings.json → Workspace
+│   ├── fileWatcher.ts      # File change detection with debouncing
+│   ├── diagnostics.ts      # Configuration issue detection
+│   ├── codeActions.ts      # Quick Fix implementations
+│   └── settingsMerger.ts   # Deep merge logic
+└── utils/
+    ├── patternMatcher.ts   # Picomatch wrapper with ! negation
+    └── quickFixHint.ts     # Platform-aware keybinding hints
+
+docs/                       # End-user documentation for diagnostics
+```
+
+## VS Code Extension API Patterns
+
+### Activation
+
+- Use `workspaceContains:**/*.code-workspace` activation event
+- Check `workspaceConfig.hasWorkspaceFile()` before full initialization
+- Initialize Quick Fix hints before services (they're cached)
+
+### File Watching
+
+- Use `vscode.workspace.createFileSystemWatcher()` for file changes
+- Implement debouncing (300ms) to avoid excessive syncs
+- Use `isForwardSyncing`/`isReverseSyncing` flags to prevent sync loops
+
+### Status Bar
+
+- Show sync status: "WM: Auto" (enabled) or "WM: Manual" (disabled)
+- Click toggles auto-sync via command
+
+## Error Handling
+
+- Log errors to Output channel (`Workspace Manager`)
+- Show user-facing errors via `vscode.window.showErrorMessage()`
+- Show warnings via `vscode.window.showWarningMessage()`
+- Show info via `vscode.window.showInformationMessage()`
+
+## Testing Changes
+
+1. Make code changes
+2. Press F5 to launch Extension Development Host
+3. Open a `.code-workspace` file to test
+4. Check Output → Workspace Manager for logs
+5. Use Shift+F5 to stop, F5 to restart with fresh state
+
+## Quality Checks
+
+Before committing:
+
+```bash
+npm run check        # TypeScript + Prettier
+npm run build        # Ensure it builds
+```
