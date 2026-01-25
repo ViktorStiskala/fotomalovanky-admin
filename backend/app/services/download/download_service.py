@@ -2,6 +2,7 @@
 
 import hashlib
 import ssl
+from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -20,17 +21,28 @@ from app.utils.request_retry import RequestRetryConfig, get_request_retrying
 logger = structlog.get_logger(__name__)
 
 
+@dataclass
+class DownloadResponse:
+    """Response from a download operation."""
+
+    content: bytes
+    headers: httpx.Headers  # Case-insensitive, dict-like access to response headers
+
+
 class DownloadService:
     """Service for downloading files with optional proxy fallback.
 
     Usage:
         async with DownloadService() as service:
-            data = await service.download(url)
+            result = await service.download(url)
+            data = result.content
+            content_type = result.headers.get("content-type")
 
     Or manually:
         service = DownloadService()
         try:
-            data = await service.download(url)
+            result = await service.download(url)
+            data = result.content
         finally:
             await service.close()
     """
@@ -153,13 +165,13 @@ class DownloadService:
         self,
         url: str,
         request_headers: dict[str, str],
-    ) -> bytes:
+    ) -> DownloadResponse:
         """Direct download using shared client (with configurable retries)."""
 
-        async def fetch() -> bytes:
+        async def fetch() -> DownloadResponse:
             response = await self._client.get(url, headers=request_headers)
             response.raise_for_status()
-            return response.content
+            return DownloadResponse(content=response.content, headers=response.headers)
 
         if self._retry_config is None:
             return await fetch()
@@ -176,10 +188,10 @@ class DownloadService:
         request_headers: dict[str, str],
         proxy: ProxyConfig,
         timeout: float,
-    ) -> bytes:
+    ) -> DownloadResponse:
         """Download via proxy (creates new client per request, with configurable retries)."""
 
-        async def fetch() -> bytes:
+        async def fetch() -> DownloadResponse:
             async with httpx.AsyncClient(
                 proxy=proxy.url,
                 verify=self._get_ssl_context(proxy),
@@ -189,7 +201,7 @@ class DownloadService:
                 response = await client.get(url, headers=request_headers)
                 response.raise_for_status()
                 logger.info("Downloaded via proxy", url=url, host=proxy.host, size=len(response.content))
-                return response.content
+                return DownloadResponse(content=response.content, headers=response.headers)
 
         if self._retry_config is None:
             return await fetch()
@@ -210,7 +222,7 @@ class DownloadService:
         proxy_fallback: bool = False,
         timeout: float = 30.0,
         proxy_timeout: float = 60.0,
-    ) -> bytes:
+    ) -> DownloadResponse:
         """Download file from URL.
 
         Args:
@@ -221,6 +233,9 @@ class DownloadService:
             proxy_fallback: Try direct first, fall back to proxies on failure (mutually exclusive with proxy)
             timeout: Timeout for direct downloads (default: 30.0)
             proxy_timeout: Timeout when using proxy (default: 60.0)
+
+        Returns:
+            DownloadResponse with content bytes and response headers
 
         Raises:
             ValueError: If both headers and extra_headers are provided

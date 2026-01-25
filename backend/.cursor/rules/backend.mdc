@@ -159,18 +159,22 @@ paths.svg_version(line_item, image, version)       # orders/{ulid}/items/{pos}/s
 Use `DownloadService` for downloading files from external URLs:
 
 ```python
-from app.services.download.download_service import DownloadService
+from app.services.download.download_service import DownloadResponse, DownloadService
 
 # ALWAYS use as async context manager
 async with DownloadService() as download_service:
     # Direct download (no proxy)
-    data = await download_service.download(url)
+    result = await download_service.download(url)
+    data = result.content
 
     # With proxy fallback (recommended for external CDNs)
-    data = await download_service.download(url, proxy_fallback=True)
+    result = await download_service.download(url, proxy_fallback=True)
+
+    # Access response headers
+    content_type = result.headers.get("content-type")
 
     # With extra headers
-    data = await download_service.download(
+    result = await download_service.download(
         url,
         extra_headers={"Referer": "https://example.com/"},
         proxy_fallback=True,
@@ -179,6 +183,7 @@ async with DownloadService() as download_service:
 
 **Features:**
 
+- Returns `DownloadResponse` with `content` (bytes) and `headers` (httpx.Headers)
 - Configurable retries via `tenacity` (default: 3 attempts)
 - Dynamic proxy discovery from `PROXY_N_*` environment variables
 - Browser-like headers with deterministic User-Agent/Accept-Language per hostname

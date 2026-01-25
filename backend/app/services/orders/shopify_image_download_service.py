@@ -67,6 +67,19 @@ class ShopifyImageDownloadService:
         }
         return content_types.get(ext, "application/octet-stream")
 
+    def _get_content_type_from_header(self, content_type_header: str | None) -> str | None:
+        """Extract content type from header if it's an image type.
+
+        Returns the MIME type if valid image/*, None otherwise.
+        Handles format like "image/jpeg; charset=utf-8".
+        """
+        if not content_type_header:
+            return None
+        mime = content_type_header.split(";")[0].strip().lower()
+        if mime.startswith("image/"):
+            return mime
+        return None
+
     async def download_single_image(
         self, image: Image, line_item: LineItem, paths: OrderStoragePaths
     ) -> bool:
@@ -78,21 +91,26 @@ class ShopifyImageDownloadService:
             return False
 
         try:
-            ext = self._get_extension_from_url(image.original_url)
-            content_type = self._get_content_type(ext)
-            key = paths.original_image(line_item, image, ext)
-
             # Download with Shopify Referer header and proxy fallback
-            data = await self.download_service.download(
+            result = await self.download_service.download(
                 url=image.original_url,
                 extra_headers={"Referer": SHOPIFY_REFERER},
                 proxy_fallback=True,
             )
 
+            ext = self._get_extension_from_url(image.original_url)
+            key = paths.original_image(line_item, image, ext)
+
+            # Use Content-Type from server if available and valid, otherwise derive from extension
+            server_content_type = self._get_content_type_from_header(
+                result.headers.get("content-type")
+            )
+            content_type = server_content_type or self._get_content_type(ext)
+
             # Upload to S3
             file_ref = await self.storage.upload(
                 upload_to=key,
-                data=data,
+                data=result.content,
                 content_type=content_type,
             )
 
