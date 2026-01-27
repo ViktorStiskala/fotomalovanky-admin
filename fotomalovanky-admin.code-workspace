@@ -1,7 +1,7 @@
 {
 	"folders": [
 		{
-			"name": "🧪 Backend",
+			"name": "Backend",
 			"path": "backend",
 			"settings": {
 				"files.exclude": {
@@ -17,7 +17,7 @@
 			}
 		},
 		{
-			"name": "✨ Frontend",
+			"name": "Frontend",
 			"path": "frontend",
 			"settings": {
 				"files.exclude": {
@@ -35,7 +35,7 @@
 			}
 		},
 		{
-			"name": "📂 Root",
+			"name": "ROOT",
 			"path": ".",
 		}
 	],
@@ -103,5 +103,62 @@
 		"workbench.editor.autoLockGroups": {
 			"workbench.editor.markdownPlan": true
 		},
+		"sqltools.connections": [
+			{
+				"pgOptions": {
+					"query_timeout": 30000,
+					"statement_timeout": 30000,
+					"idleTimeoutMillis": 600000
+				},
+				"ssh": "Disabled",
+				"previewLimit": 50,
+				"server": "localhost",
+				"port": 5439,
+				"driver": "PostgreSQL",
+				"name": "fotomalovanky-docker",
+				"group": "Local",
+				"database": "fotomalovanky",
+				"username": "fotomalovanky",
+				"password": "fotomalovanky"
+			}
+		],
+		"workbench.editor.openPositioning": "left",
+		"markdown-mermaid.darkModeTheme": "dark",
+		"markdown-mermaid.languages": [
+			"mermaid"
+		],
+		// "workbench.colorCustomizations": {
+
+		// 	"tab.activeBorder": "#FF0055",
+		// 	"tab.activeBorderTop": "#FF6600",
+		// 	//"tab.border": "#FFCC00",
+		// 	//"tab.unfocusedActiveBorder": "#88FF00",
+		// 	"tab.unfocusedHoverBorder": "#00FF44",
+		// 	"inlineEdit.tabWillAcceptModifiedBorder": "#00FFAA",
+		// 	"inlineEdit.tabWillAcceptOriginalBorder": "#00DDFF",
+		// 	"notebook.cellBorderColor": "#0088FF",
+		// 	"tab.activeModifiedBorder": "#0044FF",
+		// 	"tab.dragAndDropBorder": "#6600FF",
+		// 	"tab.inactiveModifiedBorder": "#AA00FF",
+		// 	"tab.lastPinnedBorder": "#FF00DD",
+		// 	"tab.selectedBorderTop": "#FF0099",
+		// 	"tab.unfocusedActiveBorderTop": "#FF3300",
+		// 	"statusBar.background": "#00AAFF",
+		// 	"statusBar.foreground": "#00AAFF",
+		// 	//"tab.unfocusedActiveModifiedBorder": "#AAFF00",
+		// 	//"tab.unfocusedInactiveModifiedBorder": "#00FF88",
+		// 	//"tab.worktreeBorder": "#00AAFF",
+		// 	//"terminal.tab.activeBorder": "#5500FF",
+		// 	"notebook.outputContainerBorderColor": "#DD00FF",
+		// 	//"tab.hoverBorder": "#FF9900"
+		// 	// "tab.activeForeground": "#da397d",
+		// 	// "tab.inactiveForeground": "#e4e4e48d",
+		// 	// "tab.unfocusedInactiveModifiedBorder": "#da397d",
+		// 	// "tab.unfocusedActiveBorder": "#da397d",
+		// 	// "tab.unfocusedActiveForeground": "#e4e4e48d",
+		// 	// "tab.unfocusedHoverBackground": "#2a2a2ab3",
+		// 	// "tab.unfocusedHoverBorder": "#88c0d000",
+		// 	// "tab.unfocusedInactiveForeground": "#e4e4e48d",
+		// },
 	},
 }

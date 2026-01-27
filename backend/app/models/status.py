@@ -139,6 +139,10 @@ class Status:
 _status_registries: dict[type, dict[str, Status]] = {}
 
 
+def test():
+    return None
+
+
 class ProcessingStatusEnum(StrEnum):
     """Base class for processing status enums with metadata support.
 
